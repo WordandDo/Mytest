@@ -81,6 +81,7 @@ class Environment(ABC):
             **kwargs
         }
         
+        self._initialize_config()
         # Validate required configuration
         self._validate_config()
         
@@ -104,7 +105,11 @@ class Environment(ABC):
             print("Warning: OPENAI_API_KEY is not set. Some tools may not work properly.")
         if not self.config["openai_api_url"]:
             print("Warning: OPENAI_API_URL or OPENAI_API_BASE is not set. Some tools may not work properly.")
-    
+
+    def _initialize_config(self):
+        """Initialize configuration, including Docker and Vriture Machine."""
+        pass
+
     def _generate_tool_metadata(self):
         """Generate tool schemas and descriptions."""
         self.tool_schemas = []

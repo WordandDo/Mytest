@@ -10,19 +10,10 @@
       "item_id": "aaa",
       "question": "compute: sqrt(144) + pow(3,4)/6 + sin(pi/6)*10",
       "ground_truth": "### Calculator Results:\nsqrt(144) + pow(3,4)/6 + sin(pi/6)*10 = 30.5\n",
-      "prediction": "Let's break down the computation:\n\n- √144 = 12\n- 3⁴ / 6 = 81 / 6 = 13.5\n- sin(π/6) × 10 ≈ 5\n\nAdding them up: 12 + 13.5 + 5 = 30.5\n\nFinal result: 30.5",
-      "score": 0.17142857142857146,
-      "metric_name": "f1_score",
-      "details": {
-        "ground_truth_words": 9,
-        "prediction_words": 26,
-        "common_words": 3,
-        "common_words_list": [
-          "+",
-          "=",
-          "30.5"
-        ]
-      }
+      "prediction": "Let's break down the computation:\n- sqrt(144) = 12\n- pow(3,4)/6 = 13.5\n- sin(pi/6)*10 ≈ 5\n\nAdding them together:\n12 + 13.5 + 5 = 30.5\n\nFinal result: 30.5",
+      "score": true,
+      "metric_name": "llm_judgement",
+      "details": {}
     }
   ],
   "summary": {
@@ -30,10 +21,10 @@
     "description": "",
     "total_items": 1,
     "evaluated_items": 1,
-    "metric": "f1_score",
-    "average_score": 0.17142857142857146,
-    "max_score": 0.17142857142857146,
-    "min_score": 0.17142857142857146,
-    "perfect_matches": 0
+    "metric": "llm_judgement",
+    "average_score": 1.0,
+    "max_score": true,
+    "min_score": true,
+    "perfect_matches": 1
   }
 }

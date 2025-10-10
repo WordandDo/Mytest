@@ -511,7 +511,7 @@ def main():
     parser.add_argument("--parallel", action="store_true",
                        help="Run tasks in parallel")
     parser.add_argument("--metric", type=str, default="exact_match",
-                       choices=["exact_match", "f1_score", "similarity", "contains_answer", "numeric_match"],
+                       choices=["exact_match", "f1_score", "similarity", "contains_answer", "numeric_match", "llm_judgement"],
                        help="Evaluation metric")
     
     # Environment-specific arguments

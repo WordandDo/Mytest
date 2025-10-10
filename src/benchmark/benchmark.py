@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 import re
 import difflib
 from dataclasses import dataclass
-
+import openai
 
 @dataclass
 class BenchmarkItem:
@@ -204,7 +204,7 @@ class Benchmark(ABC):
                 continue
             
             prediction = pred_dict[item.id]
-            score = self._compute_metric(item.answer, prediction, metric, **kwargs)
+            score = self._compute_metric(item.answer, prediction, metric, question=item.question, **kwargs)
             
             result = EvaluationResult(
                 item_id=item.id,
@@ -224,10 +224,14 @@ class Benchmark(ABC):
                        ground_truth: str, 
                        prediction: str, 
                        metric: str, 
+                       question: str = None,
                        **kwargs) -> float:
         """Compute a specific metric between ground truth and prediction."""
         metric_func = self._get_metric_function(metric)
-        return metric_func(ground_truth, prediction, **kwargs)
+        if metric == 'llm_judgement':
+            return metric_func(question, ground_truth, prediction, **kwargs)
+        else:
+            return metric_func(ground_truth, prediction, **kwargs)
     
     def _get_metric_function(self, metric: str) -> Callable:
         """Get the metric function by name."""
@@ -238,7 +242,8 @@ class Benchmark(ABC):
             'rouge_score': self._rouge_score,
             'similarity': self._similarity,
             'contains_answer': self._contains_answer,
-            'numeric_match': self._numeric_match
+            'numeric_match': self._numeric_match,
+            'llm_judgement': self._llm_judgement
         }
         
         if metric not in metric_functions:
@@ -344,6 +349,34 @@ class Benchmark(ABC):
                 return 1.0
         
         return 0.0
+
+    def _llm_judgement(self, question: str, labeled_answer: str, pred_answer: str, **kwargs) -> float:
+        """Use LLM to judge the prediction."""
+        # Use LLM to judge the prediction
+        PROMPT = f"""You are an evaluation assistant. Please determine if the model output is equivalent to the labeled answer.
+
+Question: {question}
+
+Labeled Answer: {labeled_answer}
+
+Model Output (Last few lines): {pred_answer}
+
+Did the model give an answer equivalent to the labeled answer? Please respond with "Correct" if they are equivalent, or "Incorrect" if they are not equivalent. Do not include any other text.
+"""
+        client = openai.OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url=os.getenv("OPENAI_API_BASE")
+            )
+        response = client.chat.completions.create(
+            model="gpt-4.1-2025-04-14",
+            messages=[{"role": "user", "content": PROMPT}],
+            temperature=0.0,
+            max_tokens=100,
+            top_p=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0
+        )
+        return response.choices[0].message.content.strip() == "Correct"
     
     def _extract_numbers(self, text: str) -> List[float]:
         """Extract all numbers from text."""
