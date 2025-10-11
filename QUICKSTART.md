@@ -26,6 +26,9 @@ python src/run.py --mode math --data src/data/math_demo.jsonl
 
 # Web agent
 python src/run.py --mode web --data src/data/webagent_demo.jsonl
+
+# RAG agent
+python src/run.py --mode rag --data src/data/rag_demo.jsonl --kb-path src/data/kb_demo.json --index-path src/index/ --metric llm_judgement
 ```
 
 ## 📚 Basic Usage

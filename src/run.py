@@ -534,8 +534,6 @@ def main():
                        help="Whether to load exsiting index for RAG mode")
     
     args = parser.parse_args()
-
-    # python src/run.py --mode rag --data src/data/rag_demo.jsonl --kb-path src/data/kb_demo.json --index-path src/index/ --metric llm_judgement --load-index
     
     # Create configuration
     config = AgentConfig(
