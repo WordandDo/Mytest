@@ -26,6 +26,9 @@ python src/run.py --mode math --data src/data/math_demo.jsonl
 
 # 网络智能体
 python src/run.py --mode web --data src/data/webagent_demo.jsonl
+
+# RAG智能体
+python src/run.py --mode rag --data src/data/rag_demo.jsonl --kb-path src/data/kb_demo.json --index-path src/index/ --metric llm_judgement
 ```
 
 ## 📚 基本使用
