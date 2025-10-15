@@ -262,7 +262,7 @@ def get_rag_index_class(use_faiss: bool = False):
     
 
 class QueryRAGIndexTool:
-    name = "query_rag_index"
+    name = "local_search"
     description = (
         "Searches a pre-built RAG index to find the most relevant text chunks. "
         "Use this tool to answer questions related to the indexed files."

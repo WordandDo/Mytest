@@ -292,8 +292,8 @@ class RAGEnvironment(Environment):
         """Initialize RAG-specific tools."""
         try:
             from tools.rag_tools import QueryRAGIndexTool
-            query_tool = QueryRAGIndexTool(self.rag_index)
-            self.register_tool(query_tool)
+            local_search_tool = QueryRAGIndexTool(self.rag_index)
+            self.register_tool(local_search_tool)
         except ImportError:
             raise ImportError("RAG tools not available")
 
