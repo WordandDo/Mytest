@@ -1,6 +1,8 @@
 from typing import Union, List, Dict, Any
 import requests
 import os
+import pdb
+import bdb
 
 # os.environ['SERPER_API_KEY'] = ''
 
@@ -77,6 +79,7 @@ class WebSearchTool:
                 
                 response = requests.post(url, headers=headers, json=payload, timeout=10)
                 response.raise_for_status()
+
                 
                 data = response.json()
                 results = self._format_results(data, query, self.search_type)
@@ -88,6 +91,8 @@ class WebSearchTool:
                 }
                 
             except Exception as e:
+                if isinstance(e, bdb.BdbQuit):
+                    raise e
                 return {
                     'query': query,
                     'success': False,
