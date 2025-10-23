@@ -1,8 +1,0 @@
-{
-  "total_qas": 6,
-  "total_trajectories": 4,
-  "total_nodes": 21,
-  "avg_trajectory_depth": 5.0,
-  "model_name": "gpt-4.1-2025-04-14",
-  "timestamp": "20251018_185810"
-}
