@@ -29,7 +29,7 @@ from benchmark import Benchmark, create_benchmark
 class AgentConfig:
     """Configuration for agent execution."""
     model_name: str = "gpt-4.1-2025-04-14"
-    max_turns: int = 20
+    max_turns: int = 100
     max_retries: int = 3
     max_workers: int = 1
     save_results: bool = True
@@ -51,7 +51,6 @@ SYSTEM_PROMPT_GENERIC = """You are a helpful assistant. You need to use tools to
 2. Use ONE tool at a time to gather information
 3. Verify findings through different approaches when possible
 """
-
 
 class AgentRunner:
     """
@@ -177,7 +176,10 @@ class AgentRunner:
             }
             
             print(f"✓ Task {task_id} completed successfully")
-            print(f"Answer: {final_answer[:100]}...")
+            if final_answer != "":
+                print(f"Answer: {final_answer[:100]}...")
+            else:
+                print("No answer found")
             
         except Exception as e:
             print(f"✗ Task {task_id} failed: {str(e)}")
@@ -208,9 +210,8 @@ class AgentRunner:
             "{tool_descriptions}", 
             self.environment.get_tool_descriptions()
         )
-        
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "developer", "content": system_prompt},
             {"role": "user", "content": question}
         ]
         
@@ -231,7 +232,11 @@ class AgentRunner:
                     response = client.chat.completions.create(
                         model=self.config.model_name,
                         messages=messages,
-                        tools=self.environment.get_tool_schemas()
+                        tools=self.environment.get_tool_schemas(),
+                        extra_body={
+                            "reasoning_effort": "high",
+                            "tool_choice": "required",
+                        }
                     )
                     
                     assistant_message = response.choices[0].message
@@ -240,12 +245,12 @@ class AgentRunner:
                     
                     if assistant_message.tool_calls:
                         # Execute tool calls
-                        for tool_call in assistant_message.tool_calls:
+                        for tool_call in assistant_message.tool_calls[:1]:
                             tool_name = tool_call.function.name
                             tool_args = json.loads(tool_call.function.arguments)
                             
-                            print(f"🔧 Using tool: {tool_name}")
-                            print(f"   Arguments: {tool_args}")
+                            print(f"Round {turn_count}: 🔧 Using tool: {tool_name}")
+                            print(f"Round {turn_count}:    Arguments: {tool_args}")
                             
                             # Execute tool
                             tool_result = self.environment.execute_tool(
@@ -253,7 +258,7 @@ class AgentRunner:
                                 tool_args
                             )
                             
-                            print(f"   Result: {tool_result[:100]}...")
+                            print(f"Round {turn_count}:    Result: {tool_result[:100]}...")
                             
                             # Add tool result to conversation
                             messages.append({
@@ -331,7 +336,7 @@ class AgentRunner:
         tasks = [
             {"id": item.id, "question": item.question}
             for item in self.benchmark.items
-        ]
+        ][:5]
         
         if parallel and len(tasks) > 1:
             # Run in parallel
@@ -496,7 +501,7 @@ def main():
     # Optional arguments
     parser.add_argument("--model", type=str, default="gpt-4.1-2025-04-14",
                        help="OpenAI model name")
-    parser.add_argument("--max-turns", type=int, default=20,
+    parser.add_argument("--max-turns", type=int, default=100,
                        help="Maximum conversation turns")
     parser.add_argument("--max-retries", type=int, default=3,
                        help="Maximum retries per turn")

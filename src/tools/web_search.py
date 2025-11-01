@@ -9,7 +9,7 @@ import random
 # os.environ['SERPER_API_KEY'] = ''
 
 class WebSearchTool:
-    name = "web_search"
+    name = "web_search_google"
     description = (
         "A web search tool powered by Serper API that can search the internet for current information. "
         "Use this tool to find recent news, articles, websites, and general information from the web."
@@ -19,7 +19,7 @@ class WebSearchTool:
             'name': 'queries',
             'type': 'array',
             'array_type': 'string', 
-            'description': 'Array of search queries to execute in parallel. Each query returns top-k results.',
+            'description': 'Array of search queries to execute in parallel.',
             'required': True
         }
     ]

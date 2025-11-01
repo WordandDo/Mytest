@@ -14,10 +14,9 @@ import requests
 
 
 class WebVisitTool:
-    name = "web_visit"
+    name = "web_visit_jina"
     description = (
         "A web page visiting and content extraction tool. "
-        "Supports Crawl4AI and Jina Reader API for content extraction. "
         "Can visit web pages, extract content, perform semantic analysis, and extract specific information based on schemas or patterns."
     )
     parameters = [
@@ -31,7 +30,7 @@ class WebVisitTool:
         {
             'name': 'goal',
             'type': 'string',
-            'description': 'The goal or purpose for content extraction. Used to guide LLM summarization of markdown content.',
+            'description': 'The goal or purpose for content extraction.',
             'required': True
         }
     ]
@@ -272,7 +271,10 @@ Please summarize the following content from {url}, focusing only on information 
 
 if __name__ == '__main__':
     # 测试WebVisitTool工具
-    
+    os.environ["OPENAI_API_KEY"] = "sk-YJkQxboKmL0IBC1M0zOzZbVaVZifM5QvN4mLAtSLZ1V4yEDX"
+    os.environ["OPENAI_API_URL"] = "http://123.129.219.111:3000/v1/"
+    os.environ["JINA_API_KEY"] = "jina_0349f5f308d54b01ade1fa24842e044dGGlzH9kzcQxCdlNltX-3Na7EKSiW"
+
     print("=== Testing with Jina API ===\n")
     visit_tool_jina = WebVisitTool(
         summary_model="gpt-4o-2024-11-20",
@@ -285,4 +287,3 @@ if __name__ == '__main__':
     })
     print(result)
     print("-" * 50)
-    print("=== Testing with Crawl4AI ===\n")
