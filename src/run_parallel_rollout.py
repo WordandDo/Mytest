@@ -2,10 +2,44 @@
 """
 并行 Rollout 框架 - 支持重资产管理的并行任务执行
 
-根据 FINAL_ARCHITECTURE_DOC.md 实现：
-- 根据环境类型决定是否启用重资产
-- 主干脚本加载 worker
-- environment 根据是否需要重资产调用 manager
+开发说明 (Development Guide):
+---------------------------
+1. 模块概述:
+   本模块 (`src/run_parallel_rollout.py`) 实现了 AgentFlow 的并行任务执行框架，
+   专门针对需要重型资源（如 OSWorld 的虚拟机）的环境进行了优化。
+   它采用 "Manager-Worker" 架构，支持跨进程的资源分配、任务分发和结果收集。
+
+2. 核心架构:
+   - 主进程 (Main Process):
+     - 负责加载 Benchmark 数据和任务配置。
+     - 初始化全局资源管理器 (`ResourceManager`)，如 VM 池。
+     - 启动 N 个 Worker 进程，并维护共享的任务队列 (`task_queue`) 和结果列表 (`shared_results`)。
+     - 监听系统信号 (SIGINT/SIGTERM)，确保优雅退出和资源清理。
+     - 最后收集所有结果，调用 Benchmark 进行评测，并保存结果。
+
+   - Worker 进程 (`run_rollout_worker`):
+     - 每个 Worker 是一个独立的进程。
+     - 动态加载指定的环境类 (如 `ParallelOSWorldRolloutEnvironment`)。
+     - 实现了 "控制反转" (IoC): Worker 负责通用的循环逻辑（取任务 -> 申请资源 -> 执行 -> 释放资源），
+       具体的任务执行逻辑由环境类的 `run_task` 接口提供。
+     - 通过 `allocate_resource` 向主进程的资源管理器申请资源（如 VM），
+       并在本地实例化 `DesktopEnv` (Attach 模式)。
+
+3. 关键类与函数:
+   - `ParallelRolloutConfig`: 数据类，定义并行执行的配置参数（并发数、环境模式等）。
+   - `run_parallel_rollout`: 主入口函数，协调整个并行执行流程。
+   - `run_rollout_worker`: Worker 进程的执行体，包含资源申请、任务执行和异常处理逻辑。
+   - `_register_main_signal_handlers`: 注册信号处理器，防止强制退出导致资源泄露（如 VM 未释放）。
+
+4. 扩展与适配:
+   - 新增环境: 只需继承 `Environment` 并实现 `setup_global_resources`, `allocate_resource` 等接口，
+     即可接入此并行框架，无需修改本文件核心逻辑。
+   - 资源管理: 通过 `global_resources` 对象（鸭子类型）与具体的资源管理器（如 `VMPoolResourceManager`）交互，
+     支持扩展其他类型的重型资源。
+
+5. 使用示例:
+   python src/run_parallel_rollout.py --data_path data/tasks.jsonl --num_rollouts 4 --env_mode osworld
+
 """
 
 import os
