@@ -23,19 +23,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 from benchmark import Benchmark
-from utils.resource_manager import ResourceManager, HeavyResourceManager
 from envs.enviroment import Environment
-from envs.factory import get_environment_class, register_environment
-
-# Register ParallelOSWorldRolloutEnvironment for parallel rollout
-try:
-    from envs.parallel_osworld_rollout_environment import ParallelOSWorldRolloutEnvironment
-    # For parallel rollout, use "osworld" mode but with ParallelOSWorldRolloutEnvironment
-    register_environment("osworld_parallel", ParallelOSWorldRolloutEnvironment)
-    # Also allow "osworld" to use parallel environment in parallel mode
-    # (This can be overridden by explicit registration)
-except ImportError:
-    pass
+from envs.factory import get_environment_class
 
 # 配置日志
 logging.basicConfig(
@@ -54,15 +43,17 @@ if os.path.exists(ENV_PATH):
 else:
     logger.warning(f".env file not found at {ENV_PATH}, skipping environment variable preload")
 
-_MAIN_RESOURCE_MANAGER: Optional[ResourceManager] = None
+_MAIN_RESOURCE_MANAGER: Optional[Any] = None
 
 
-def _register_main_signal_handlers(resource_manager: ResourceManager):
+def _register_main_signal_handlers(global_resources: Any):
     """
     注册主进程信号处理，确保 Ctrl+C 时优雅关闭资源
+    
+    使用鸭子类型检查资源对象是否有 stop_all 方法
     """
     global _MAIN_RESOURCE_MANAGER
-    _MAIN_RESOURCE_MANAGER = resource_manager
+    _MAIN_RESOURCE_MANAGER = global_resources
 
     def handle_signal(signum, frame):
         """
@@ -70,8 +61,8 @@ def _register_main_signal_handlers(resource_manager: ResourceManager):
         """
         logger.info(f"Main process received signal {signum}, cleaning up resources...")
         try:
-            # 如果资源管理器已初始化，则停止所有资源
-            if _MAIN_RESOURCE_MANAGER:
+            # 使用鸭子类型检查是否有 stop_all 方法
+            if _MAIN_RESOURCE_MANAGER and hasattr(_MAIN_RESOURCE_MANAGER, 'stop_all'):
                 _MAIN_RESOURCE_MANAGER.stop_all()
         except Exception as exc:
             # 捕获停止资源过程中的异常，记录错误但不阻止退出
@@ -88,12 +79,10 @@ def _register_main_signal_handlers(resource_manager: ResourceManager):
 class ParallelRolloutConfig:
     """并行 Rollout 配置"""
     num_rollouts: int = 5          # 并行度（Worker 数量）
-    num_vms: int = 3               # VM 池大小（仅用于 OSWorld）
     env_mode: str = "osworld"      # 环境模式
     env_kwargs: Dict[str, Any] = field(default_factory=dict)  # 环境配置参数
     agent_config_dict: Dict[str, Any] = field(default_factory=dict)  # Agent 配置
     output_dir: str = "results"    # 输出目录
-    use_resource_pool: bool = True  # 是否使用资源池（仅用于 OSWorld）
 
 
 def run_parallel_rollout(
@@ -117,28 +106,17 @@ def run_parallel_rollout(
     logger.info("=" * 60)
     logger.info("Starting Parallel Rollout Framework")
     logger.info(f"  Num Rollouts: {config.num_rollouts}")
-    logger.info(f"  Num VMs: {config.num_vms}")
     logger.info(f"  Env Mode: {config.env_mode}")
-    logger.info(f"  Use Resource Pool: {config.use_resource_pool}")
     logger.info(f"  Benchmark Items: {len(benchmark.get_items())}")
     logger.info("=" * 60)
     
-    # 1. 根据 env_mode 获取环境类
-    # 对于并行执行，优先使用并行环境类
-    env_mode_key = config.env_mode
-    if env_mode_key == "osworld":
-        # 尝试使用并行环境，如果不存在则回退到普通环境
-        try:
-            EnvClass = get_environment_class("osworld_parallel")
-            logger.info("Using ParallelOSWorldRolloutEnvironment for parallel execution")
-        except ValueError:
-            EnvClass = get_environment_class(env_mode_key)
-    else:
-        EnvClass = get_environment_class(env_mode_key)
+    # 1. 根据 env_mode 动态获取环境类
+    EnvClass = get_environment_class(config.env_mode)
+    logger.info(f"Using environment class: {EnvClass.__name__}")
     
-    # 2. 调用环境类的 setup_global_resources 方法创建资源管理器
-    resource_manager = EnvClass.setup_global_resources(config)
-    _register_main_signal_handlers(resource_manager)
+    # 2. 调用环境类的 setup_global_resources 方法初始化全局资源
+    global_resources = EnvClass.setup_global_resources(config)
+    _register_main_signal_handlers(global_resources)
     
     try:
         # 2. 创建跨进程共享的数据结构（任务队列、结果列表、映射字典、事件列表）
@@ -172,7 +150,7 @@ def run_parallel_rollout(
                         config.env_kwargs,
                         config.agent_config_dict,
                         config.output_dir,
-                        resource_manager,
+                        global_resources,  # 传递全局资源对象
                         config.num_rollouts,
                         shared_results,
                         worker_instance_map,
@@ -245,10 +223,11 @@ def run_parallel_rollout(
                 "benchmark_evaluation": benchmark_results
             }
     finally:
-        # 无论成功与否，都要停止所有资源（如 VM 池）
+        # 无论成功与否，都要停止所有资源（使用鸭子类型检查）
         try:
-            logger.info("Stopping all resources...")
-            resource_manager.stop_all()
+            if global_resources is not None and hasattr(global_resources, 'stop_all'):
+                logger.info("Stopping all resources...")
+                global_resources.stop_all()
         except Exception as exc:
             # 资源停止失败不影响主流程，只记录错误
             logger.error(f"Failed to stop resources: {exc}")
@@ -261,7 +240,7 @@ def run_rollout_worker(
     env_kwargs: Dict[str, Any],
     agent_config_dict: Dict[str, Any],
     output_dir: str,
-    resource_manager: ResourceManager,
+    global_resources: Any,  # 全局资源对象（不透明对象，使用鸭子类型）
     parallel_degree: int,
     shared_results,
     worker_instance_map=None,
@@ -272,12 +251,6 @@ def run_rollout_worker(
     
     使用控制反转模式：Worker 只负责通用流程，具体执行逻辑由环境类提供。
     
-    在分布式架构中：
-    - resource_manager 通过 multiprocessing.Process 的 args 传递（包含 BaseManager 代理）
-    - environment.allocate_resource() 调用 resource_manager.allocate()
-    - resource_manager.allocate() 从 Manager 获取连接信息，在 Worker 本地实例化 DesktopEnv（Attach 模式）
-    - DesktopEnv 对象在 Worker 进程中创建，避免跨进程序列化问题
-    
     Args:
         worker_id: Worker 标识符
         task_queue: 任务队列
@@ -285,7 +258,7 @@ def run_rollout_worker(
         env_kwargs: 环境配置参数
         agent_config_dict: Agent 配置字典（包含 model_name, max_turns, max_retries, output_dir 等）
         output_dir: 输出目录
-        resource_manager: 资源管理器实例（包含 BaseManager 代理，可跨进程传递）
+        global_resources: 全局资源对象（不透明对象，由环境类管理，主脚本不关心具体类型）
         parallel_degree: 并行度
         shared_results: 共享结果列表
         worker_instance_map: (可选) Manager dict，用于记录 worker-实例映射
@@ -323,12 +296,10 @@ def run_rollout_worker(
         env_module = __import__(module_name, fromlist=[class_name])
         EnvClass = getattr(env_module, class_name)
         
-        # 2. 如果资源管理器是重型资源管理器，则传递给环境；否则传递 None
-        heavy_manager = resource_manager if isinstance(resource_manager, HeavyResourceManager) else None
-        
-        # 3. 初始化环境实例
+        # 2. 初始化环境实例，将全局资源对象传递给环境
+        # 环境类负责判断是否需要使用该资源对象
         environment = EnvClass(
-            resource_manager=heavy_manager,
+            resource_manager=global_resources,
             parallel_degree=parallel_degree,
             **env_kwargs,
         )
@@ -375,6 +346,7 @@ def run_rollout_worker(
 
             task_id = task.get("id", "unknown")
             resource_allocated = False
+            current_resource_id = None
 
             try:
                 # 确保 task 的 metadata 字段存在
@@ -397,22 +369,22 @@ def run_rollout_worker(
                     if task_env_config:
                         task_config_fn(task_env_config)
 
-                # 如果环境需要重型资源（如 VM），则从资源池中分配资源
+                # 如果环境需要重型资源，则从资源池中分配资源
                 if env_has_heavy_resource:
-                    logger.info(f"[worker {worker_id}] requesting VM from manager")
+                    logger.info(f"[worker {worker_id}] requesting resource from manager")
                     # 尝试分配资源，如果失败则抛出异常
                     if not allocate_fn or not allocate_fn(worker_id):
                         raise RuntimeError("Failed to allocate resource from pool")
                     resource_allocated = True
-                    # 获取已分配的资源 ID（如 VM ID）
+                    # 获取已分配的资源 ID
                     get_allocated_fn = getattr(environment, "get_allocated_resource_id", None)
-                    current_vm_id = get_allocated_fn() if callable(get_allocated_fn) else None
-                    if current_vm_id:
-                        logger.info(f"[worker {worker_id}] acquired vm={current_vm_id}")
+                    current_resource_id = get_allocated_fn() if callable(get_allocated_fn) else None
+                    if current_resource_id:
+                        logger.info(f"[worker {worker_id}] acquired resource={current_resource_id}")
                         # 如果提供了映射字典，记录 worker 与实例的映射关系
                         if worker_instance_map is not None:
                             worker_instance_map[worker_id] = {
-                                "instance_id": current_vm_id,
+                                "instance_id": current_resource_id,
                                 "task_id": task_id,
                                 "assigned_time": datetime.now().isoformat(),
                             }
@@ -422,15 +394,13 @@ def run_rollout_worker(
                                 {
                                     "timestamp": datetime.now().isoformat(),
                                     "worker_id": worker_id,
-                                    "instance_id": current_vm_id,
+                                    "instance_id": current_resource_id,
                                     "task_id": task_id,
                                     "action": "allocate",
                                 }
                             )
 
                 # 8. 调用环境的 run_task 方法执行任务（控制反转核心）
-                if environment is None:
-                    raise RuntimeError("Environment not initialized")
                 result = environment.run_task(task, agent_config, logger)
 
                 # 将任务结果添加到共享结果列表
@@ -456,13 +426,8 @@ def run_rollout_worker(
             finally:
                 # 无论任务成功或失败，都要释放已分配的资源
                 if env_has_heavy_resource and resource_allocated and callable(release_fn):
-                    current_vm_id = None
-                    # 获取当前分配的实例 ID
-                    get_allocated_fn = getattr(environment, "get_allocated_resource_id", None)
-                    if callable(get_allocated_fn):
-                        current_vm_id = get_allocated_fn()
-                    if current_vm_id:
-                        logger.info(f"[worker {worker_id}] releasing vm={current_vm_id}")
+                    if current_resource_id:
+                        logger.info(f"[worker {worker_id}] releasing resource={current_resource_id}")
                     # 释放资源并重置环境
                     release_fn(worker_id, reset=True)
                     # 从映射字典中移除该 worker 的记录
@@ -474,7 +439,7 @@ def run_rollout_worker(
                             {
                                 "timestamp": datetime.now().isoformat(),
                                 "worker_id": worker_id,
-                                "instance_id": current_vm_id,
+                                "instance_id": current_resource_id,
                                 "task_id": task_id,
                                 "action": "release",
                             }
@@ -518,10 +483,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run parallel rollout")
     parser.add_argument("--data_path", type=str, required=True, help="Path to benchmark data file")
     parser.add_argument("--num_rollouts", type=int, default=5, help="Number of parallel workers")
-    parser.add_argument("--num_vms", type=int, default=3, help="Number of VMs in pool")
     parser.add_argument("--env_mode", type=str, default="osworld", help="Environment mode")
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
-    parser.add_argument("--use_resource_pool", action="store_true", help="Use resource pool")
     parser.add_argument("--provider", type=str, default=None, help="Override VM provider name (e.g., aliyun, aws)")
     parser.add_argument("--region", type=str, default=None, help="Override region for cloud providers")
     parser.add_argument("--headless", action="store_true", help="Run desktop environment in headless mode if supported")
@@ -551,10 +514,8 @@ if __name__ == "__main__":
     # 创建配置
     config = ParallelRolloutConfig(
         num_rollouts=args.num_rollouts,
-        num_vms=args.num_vms,
         env_mode=args.env_mode,
         output_dir=args.output_dir,
-        use_resource_pool=args.use_resource_pool,
         env_kwargs=env_kwargs,
         agent_config_dict={
             "model_name": "gpt-4.1-2025-04-14",

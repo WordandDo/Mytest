@@ -1,326 +1,158 @@
+# -*- coding: utf-8 -*-
 """
-Environment classes for AgentFlow - manages tools and configuration for agent environments.
+Environment Base Class (Simplified)
+
+只保留核心架构：配置管理、工具注册、资源接口与任务入口。
 """
 
 import os
-import json
 import logging
-from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 from abc import ABC, abstractmethod
-import sys
-import pdb
-import bdb
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from utils.resource_manager import ResourceManager
 
-# Note: Tool imports have been moved to individual environment files
-# Each concrete environment (MathEnvironment, WebEnvironment, etc.)
-# imports only the tools it needs
-
-# Note: Trajectory data models (Observation, TrajectoryStep, TaskTrajectory)
-# have been moved to envs.data_models module
-# Import them from there if needed in specific environments
-
 
 class Tool(ABC):
-    """Abstract base class for all tools."""
+    """工具抽象基类"""
+    @property
+    @abstractmethod
+    def name(self) -> str: pass
     
     @property
     @abstractmethod
-    def name(self) -> str:
-        """Tool name."""
-        pass
+    def description(self) -> str: pass
     
     @property
     @abstractmethod
-    def description(self) -> str:
-        """Tool description."""
-        pass
-    
-    @property
-    @abstractmethod
-    def parameters(self) -> List[Dict[str, Any]]:
-        """Tool parameters schema."""
-        pass
+    def parameters(self) -> List[Dict[str, Any]]: pass
     
     @abstractmethod
-    def call(self, params: Union[str, dict], **kwargs) -> str:
-        """Execute the tool with given parameters."""
-        pass
+    def call(self, params: Union[str, dict], **kwargs) -> str: pass
 
 
 class Environment(ABC):
     """
-    Abstract base class for agent environments.
+    Agent 环境基类 (精简版)
     
-    This class provides a unified interface for:
-    - Tool registration and management
-    - Configuration management (API keys, model settings, etc.)
-    - Tool execution and schema generation
+    职责：
+    1. 定义环境接口规范 (Mode, Run Task)
+    2. 提供基础工具管理 (Register, Execute, Schema)
+    3. 提供资源管理接口 (Setup Global Resources)
     """
     
     def __init__(self, 
                  model_name: str = "gpt-4.1-2025-04-14",
-                 openai_api_key: Optional[str] = None,
-                 openai_api_url: Optional[str] = None,
-                 enable_terminal_bench: bool = False, # added for Terminal Bench
-                 defer_init: bool = False,
-                 has_heavy_resource: bool = False,
                  resource_manager: Optional['ResourceManager'] = None,
-                 parallel_degree: int = 1,
                  **kwargs):
         """
-        Initialize the environment.
+        基础初始化。
         
         Args:
-            model_name: OpenAI model name to use
-            openai_api_key: OpenAI API key (if None, will use env var)
-            openai_api_url: OpenAI API URL (if None, will use env var)
-            enable_terminal_bench: Enable Terminal Bench support
-            defer_init: If True, defer tool initialization until env_start() is called.
-                       Useful for parallel mode where main process shouldn't create resources.
-            has_heavy_resource: 是否包含重资产
-            resource_manager: 资源管理器实例
-            parallel_degree: 并行度（从运行框架传递）
-            **kwargs: Additional configuration parameters
+            model_name: 默认模型名称
+            resource_manager: 资源管理器实例 (由 setup_global_resources 创建)
+            **kwargs: 其他配置参数 (保存至 self.config)
         """
         self.model_name = model_name
+        self.config = kwargs
+        
+        # 工具管理
         self.tools: Dict[str, Tool] = {}
         self.tool_schemas: List[Dict[str, Any]] = []
         self.tool_descriptions: str = ""
         
-        # Track initialization state
-        self._deferred_init = defer_init
-        self._initialized = False
-        
-        # Resource management
-        self._has_heavy_resource = has_heavy_resource
+        # 资源管理
         self._resource_manager = resource_manager
-        self._parallel_degree = parallel_degree
-        self._task_env_config = {}
-        
-        # 如果有重资产但未提供 manager，创建默认的 NoResourceManager
-        if not has_heavy_resource and resource_manager is None:
+        if self._resource_manager is None:
             from utils.resource_manager import NoResourceManager
             self._resource_manager = NoResourceManager()
-        
-        # Configuration
-        self.config = {
-            "openai_api_key": openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
-            "openai_api_url": openai_api_url or os.environ.get("OPENAI_API_URL", os.environ.get("OPENAI_API_BASE", "")),
-            "enable_terminal_bench": enable_terminal_bench,
-            "terminal_bench_images": kwargs.get("terminal_bench_images", ["tbench/ubuntu:latest"]),
-            "container_timeout": kwargs.get("container_timeout", 300),
-            "max_containers": kwargs.get("max_containers", 5),
-            **kwargs
-        }
-        
-        self._initialize_config()
-        # Validate required configuration
-        self._validate_config()
-        
-        # Initialize tools - deferred if defer_init=True
-        if not defer_init:
-            self._initialize_tools()
-            self._initialized = True
-        else:
-            # Mark as initialized but tools not yet created
-            # Tools will be created in env_start()
-            self._initialized = False
+            
+        # 自动调用子类工具初始化
+        self._initialize_tools()
+
+    # =========================================================================
+    # 1. 核心抽象接口 (开发者必须实现)
+    # =========================================================================
     
     @property
     @abstractmethod
     def mode(self) -> str:
-        """Return the environment mode name."""
+        """返回环境模式名称 (如 'math', 'osworld')"""
         pass
-    
-    @property
-    def has_heavy_resource(self) -> bool:
-        """是否包含重资产"""
-        return self._has_heavy_resource
-    
-    @property
-    def resource_manager(self) -> 'ResourceManager':
-        """获取资源管理器"""
-        return self._resource_manager
-    
-    @property
-    def parallel_degree(self) -> int:
-        """获取并行度"""
-        return self._parallel_degree
-
-    def get_action_space(self) -> Optional[str]:
-        """
-        Get the action space for this environment (if applicable).
-
-        Returns:
-            Action space string (e.g., "computer_13", "pyautogui") or None if not applicable.
-
-        Note:
-            Subclasses should override this method if they use action spaces.
-            Default implementation returns None.
-        """
-        return None
 
     @abstractmethod
     def _initialize_tools(self):
-        """Initialize tools specific to this environment. Must be implemented by subclasses."""
+        """在此方法中注册环境所需的工具"""
         pass
-    
-    def _validate_config(self):
-        """Validate required configuration parameters."""
-        if not self.config["openai_api_key"]:
-            print("Warning: OPENAI_API_KEY is not set. Some tools may not work properly.")
-        if not self.config["openai_api_url"]:
-            print("Warning: OPENAI_API_URL or OPENAI_API_BASE is not set. Some tools may not work properly.")
 
-    def _initialize_config(self):
-        """Initialize configuration, including Docker and Virtual Machine."""
-        # Check if Terminal Bench is required for this environment
-        if not self.config.get("enable_terminal_bench", False):
-            return
-        
-        import subprocess
-        import shutil
-        
-        try:
-            # 1. Check if Docker is installed
-            if not shutil.which("docker"):
-                print("Warning: Docker is not installed. Terminal Bench requires Docker.")
-                print("Please install Docker from: https://docs.docker.com/get-docker/")
-                self.config["terminal_bench_available"] = False
-                return
-            
-            # 2. Check if Docker daemon is running
-            try:
-                subprocess.run(
-                    ["docker", "info"],
-                    check=True,
-                    capture_output=True,
-                    timeout=10
-                )
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                print("Warning: Docker daemon is not running. Please start Docker.")
-                self.config["terminal_bench_available"] = False
-                return
-            
-            # 3. Check if Terminal Bench is installed
-            try:
-                result = subprocess.run(
-                    ["tbench", "--version"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                print(f"Terminal Bench installed: {result.stdout.strip()}")
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                print("Terminal Bench not found. Installing...")
-                try:
-                    # Install Terminal Bench via pip
-                    subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "terminal-bench"],
-                        check=True,
-                        capture_output=True
-                    )
-                    print("Terminal Bench installed successfully.")
-                except subprocess.CalledProcessError as e:
-                    print(f"Failed to install Terminal Bench: {e}")
-                    self.config["terminal_bench_available"] = False
-                    return
-            
-            # 4. Pull required Docker images
-            print("Pulling Terminal Bench Docker images...")
-            images = self.config.get("terminal_bench_images", ["tbench/ubuntu:latest"])
-            
-            for image in images:
-                try:
-                    print(f"Pulling {image}...")
-                    subprocess.run(
-                        ["docker", "pull", image],
-                        check=True,
-                        capture_output=True,
-                        timeout=300  # 5 minutes timeout
-                    )
-                    print(f"Successfully pulled {image}")
-                except subprocess.TimeoutExpired:
-                    print(f"Timeout pulling {image}. Please pull manually.")
-                except subprocess.CalledProcessError as e:
-                    print(f"Failed to pull {image}: {e}")
-            
-            # 5. Initialize Terminal Bench configuration
-            tbench_config = {
-                "docker_available": True,
-                "images": images,
-                "container_timeout": self.config.get("container_timeout", 300),
-                "max_containers": self.config.get("max_containers", 5)
-            }
-            self.config["terminal_bench"] = tbench_config
-            self.config["terminal_bench_available"] = True
-            
-            print("Terminal Bench environment initialized successfully.")
-            
-        except Exception as e:
-            print(f"Error initializing Terminal Bench: {e}")
-            self.config["terminal_bench_available"] = False
+    @abstractmethod
+    def run_task(self, task: Dict[str, Any], agent_config: Dict[str, Any], logger: logging.Logger) -> Dict[str, Any]:
+        """
+        核心任务执行入口。
+        必须封装完整的 Agent 闭环：Prompt -> LLM -> Tool Execution -> Result
+        """
+        raise NotImplementedError("Subclasses must implement run_task")
 
-    def _generate_tool_metadata(self):
-        """Generate tool schemas and descriptions."""
-        self.tool_schemas = []
-        descriptions = []
-        
-        for tool in self.tools.values():
-            # Convert tool to JSON schema
-            schema = self._convert_tool_to_schema(tool)
-            self.tool_schemas.append(schema)
-            
-            # Add to descriptions
-            descriptions.append(f"- {tool.name}: {tool.description}")
-        
-        self.tool_descriptions = "\n".join(descriptions)
-    
+    # =========================================================================
+    # 2. 资源管理接口 (主进程调用)
+    # =========================================================================
+
+    @classmethod
+    def setup_global_resources(cls, config: Any) -> 'ResourceManager':
+        """
+        类方法：初始化全局资源 (如 VM 池)。
+        默认返回空管理器，需要重资产的环境(如 OSWorld)需重写此方法。
+        """
+        from utils.resource_manager import NoResourceManager
+        return NoResourceManager()
+
+    @property
+    def resource_manager(self) -> 'ResourceManager':
+        return self._resource_manager
+
+    # =========================================================================
+    # 3. 工具管理设施 (已实现，通常无需修改)
+    # =========================================================================
+
     def register_tool(self, tool: Tool):
-        """Register a tool in the environment."""
+        """注册工具并自动更新 Schema"""
         self.tools[tool.name] = tool
-        print(f"Registered tool: {tool.name}")
-        # Regenerate metadata after adding tool
-        self._generate_tool_metadata()
-    
-    def unregister_tool(self, tool_name: str):
-        """Unregister a tool from the environment."""
-        if tool_name in self.tools:
-            del self.tools[tool_name]
-            print(f"Unregistered tool: {tool_name}")
-            # Regenerate metadata after removing tool
-            self._generate_tool_metadata()
-        else:
-            print(f"Tool {tool_name} not found")
-    
-    def get_tool(self, tool_name: str) -> Optional[Tool]:
-        """Get a tool by name."""
-        return self.tools.get(tool_name)
-    
-    def list_tools(self) -> List[str]:
-        """List all registered tool names."""
-        return list(self.tools.keys())
-    
-    def _convert_tool_to_schema(self, tool: Tool) -> Dict[str, Any]:
-        """Convert a tool to OpenAI function calling schema."""
-        required_params = [param['name'] for param in tool.parameters if param.get('required', False)]
-        properties = {}
-        
-        for param in tool.parameters:
-            properties[param['name']] = {
-                "type": param['type'],
-                "description": param['description']
-            }
-            if param['type'] == 'array':
-                properties[param['name']]['items'] = {
-                    "type": param['array_type']
-                }
-        
+        self._update_tool_metadata()
+
+    def get_tool(self, name: str) -> Optional[Tool]:
+        return self.tools.get(name)
+
+    def execute_tool(self, tool_name: str, params: Union[str, dict], **kwargs) -> str:
+        """执行工具的安全包装器"""
+        tool = self.get_tool(tool_name)
+        if not tool:
+            return f"Error: Tool '{tool_name}' not found"
+        try:
+            return tool.call(params, **kwargs)
+        except Exception as e:
+            return f"Error executing '{tool_name}': {str(e)}"
+
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        """获取用于 LLM API 的工具定义"""
+        return self.tool_schemas
+
+    def get_tool_descriptions(self) -> str:
+        """获取用于 Prompt 的工具描述文本"""
+        return self.tool_descriptions
+
+    def _update_tool_metadata(self):
+        """(内部) 生成工具 Schema 和描述"""
+        self.tool_schemas = [self._tool_to_schema(t) for t in self.tools.values()]
+        self.tool_descriptions = "\n".join([f"- {t.name}: {t.description}" for t in self.tools.values()])
+
+    def _tool_to_schema(self, tool: Tool) -> Dict[str, Any]:
+        """(内部) 将 Tool 转换为 OpenAI Schema 格式"""
+        properties = {
+            p['name']: {"type": p['type'], "description": p['description']}
+            for p in tool.parameters
+        }
+        required = [p['name'] for p in tool.parameters if p.get('required', False)]
         return {
             "type": "function",
             "function": {
@@ -329,483 +161,31 @@ class Environment(ABC):
                 "parameters": {
                     "type": "object",
                     "properties": properties,
-                    "required": required_params
+                    "required": required
                 }
             }
         }
-    
-    def execute_tool(self, tool_name: str, params: Union[str, dict], **kwargs) -> str:
-        """Execute a tool with given parameters."""
-        tool = self.get_tool(tool_name)
-        if not tool:
-            return f"Tool '{tool_name}' not found"
-        
-        try:
-            return tool.call(params, **kwargs)
-        except Exception as e:
-            if isinstance(e, bdb.BdbQuit):
-                raise e
-            return f"Error executing tool '{tool_name}': {str(e)}"
-    
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Get tool schemas for OpenAI function calling."""
-        return self.tool_schemas
-    
-    def get_tool_descriptions(self) -> str:
-        """Get tool descriptions for system prompts."""
-        return self.tool_descriptions
 
-    def get_system_prompt(self, task_question: str) -> str:
-        """
-        Get the complete system prompt for this environment.
-
-        This method constructs the system prompt by:
-        1. Selecting the appropriate prompt template based on mode and action_space
-        2. Replacing placeholders with actual values (tool descriptions, passwords, etc.)
-        3. Adding the task question
-
-        Args:
-            task_question: The task/question to be completed
-
-        Returns:
-            Complete system prompt string ready for LLM
-
-        Note:
-            Subclasses can override this method for custom prompt construction.
-            Default implementation uses the prompts module.
-        """
-        from prompts import get_system_prompt as get_prompt_template
-
-        # Get environment mode and action space
-        environment_mode = self.mode
-        action_space = self.get_action_space()
-
-        # Get the appropriate system prompt template
-        system_prompt_template = get_prompt_template(environment_mode, action_space)
-
-        # Replace tool descriptions placeholder
-        system_prompt = system_prompt_template.replace(
-            "{tool_descriptions}",
-            self.get_tool_descriptions()
-        )
-
-        # Replace environment-specific placeholders (can be overridden by subclasses)
-        system_prompt = self._replace_prompt_placeholders(system_prompt)
-
-        # Add task question
-        system_prompt = system_prompt + f"\nYou are asked to complete the following task: {task_question}"
-
-        return system_prompt
-
-    def _replace_prompt_placeholders(self, prompt: str) -> str:
-        """
-        Replace environment-specific placeholders in the prompt.
-
-        Args:
-            prompt: Prompt template with placeholders
-
-        Returns:
-            Prompt with placeholders replaced
-
-        Note:
-            Subclasses should override this method to handle their specific placeholders.
-            Default implementation does nothing.
-        """
-        return prompt
-
-    def get_initial_observation(self, task_question: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the initial observation for the task (if applicable).
-
-        This method is called at the start of a task to gather initial state information
-        that should be provided to the LLM along with the task question.
-
-        Args:
-            task_question: The task/question to be completed
-
-        Returns:
-            Dictionary containing initial observation data, or None if not applicable.
-            Format depends on environment type:
-            - For OSWorld: {"screenshot": base64_str, "a11y_tree": str, ...}
-            - For other environments: None (no initial observation needed)
-
-        Note:
-            Subclasses should override this method if they need to provide
-            initial observations (e.g., screenshot, state info).
-        """
-        return None
-
-    def format_observation_for_message(self, observation: Any) -> List[Dict[str, Any]]:
-        """
-        Format observation data into message content parts for LLM.
-
-        This method converts raw observation data into the format expected by
-        the LLM conversation (text, images, etc.).
-
-        Args:
-            observation: Raw observation data from get_initial_observation()
-
-        Returns:
-            List of message content parts (dicts with "type" and data).
-            Empty list if no observation or not applicable.
-
-        Note:
-            Subclasses should override this method to format their specific
-            observation types.
-        """
-        return []
-
-    def format_initial_observation_for_message(self, initial_obs: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Format initial observation from env_task_init() into message content parts.
-
-        This is a convenience method that handles the simplified observation format
-        commonly returned by env_task_init() in various environments.
-
-        Args:
-            initial_obs: Initial observation dict from env_task_init()
-                        Default format: {'text': str, 'image': str (base64)}
-                        (Format may vary by environment)
-
-        Returns:
-            List of message content parts for LLM conversation.
-            Empty list if no observation or not applicable.
-
-        Note:
-            Default implementation returns empty list. Subclasses should override
-            this method if they provide initial observations (e.g., OSWorld).
-        """
-        return []
-
-    # ========================================================================
-    # Task Lifecycle Methods
-    # ========================================================================
-    # These methods manage the lifecycle of individual tasks within a benchmark
-
-    def env_task_init(self, task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Initialize environment for a new task and return initial observation.
-
-        This method performs:
-        1. Reset environment for the task
-        2. Start recording (if applicable)
-        3. Clear trajectory storage
-        4. Get and return initial observation
-
-        Args:
-            task: Task dictionary with 'id', 'question', and optionally 'metadata'
-
-        Returns:
-            Initial observation dictionary, or None if not applicable.
-            For OSWorld: {'text': str, 'image': base64_str}
-            For other environments: None
-
-        Note:
-            Default implementation returns None.
-            Subclasses should override to provide initial observations (e.g., OSWorld).
-        """
-        return None
-
-    def env_task_end(self, task_id: str, task_output_dir: Optional[str] = None, final_answer: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """
-        Finalize task execution: end recording, save trajectory, and return final result.
-
-        This method performs:
-        1. End recording and save video (if applicable)
-        2. Save trajectory data to task_output_dir
-        3. Determine final answer (LLM output or environment evaluation)
-        4. Clear task-specific data
-
-        Args:
-            task_id: Task identifier
-            task_output_dir: Directory to save recordings and trajectory
-            final_answer: LLM's final answer from conversation
-
-        Returns:
-            Result dictionary with final answer:
-            {
-                "answer": str  # Final answer for this task
-            }
-
-            **For environments with internal evaluation** (e.g., OSWorld):
-            - Ignores LLM's final_answer
-            - Returns evaluation score as answer: {"answer": "0.85"}
-
-            **For general environments** (math, rag, web, etc.):
-            - Returns LLM's final_answer: {"answer": final_answer}
-
-        Note:
-            - OSWorld: Uses environment evaluator, ignores LLM output
-            - Other envs: Uses LLM output as answer
-            - Returned answer will be used in benchmark.evaluate()
-            - Subclasses should override if they have internal evaluation
-        """
-        # Default implementation: return LLM's answer
-        return {"answer": final_answer} if final_answer is not None else None
+    # =========================================================================
+    # 4. 生命周期钩子 (可选覆盖)
+    # =========================================================================
 
     def env_start(self) -> None:
-        """
-        Start the environment (called once at benchmark start).
-
-        This is called in run_benchmark before processing any tasks.
-        Use this to initialize resources needed across all tasks.
-
-        If defer_init=True was used in __init__, this method will
-        trigger tool initialization.
-
-        Note:
-            Default implementation handles deferred initialization.
-            Subclasses can override for additional environment-wide initialization.
-        """
-        # Handle deferred initialization
-        if self._deferred_init and not self._initialized:
-            self._initialize_tools()
-            self._initialized = True
+        """Benchmark 开始时调用 (可选初始化)"""
+        pass
 
     def env_close(self) -> None:
-        """
-        Close and cleanup the environment (called once at benchmark end).
-
-        This is called in run_benchmark after all tasks complete.
-        Use this to cleanup resources used across all tasks.
-
-        Note:
-            Default implementation does nothing.
-            Subclasses should override if they need cleanup (e.g., OSWorld).
-        """
+        """Benchmark 结束时调用 (可选清理)"""
         pass
 
-    # ========================================================================
-    # Legacy Task Lifecycle Methods (kept for backward compatibility)
-    # ========================================================================
-    # These methods are still used internally by env_task_init/env_task_end
+    # =========================================================================
+    # 5. 配置管理钩子 (可选覆盖，供子类调用 super())
+    # =========================================================================
 
-    def reset_for_task(self, task: Dict[str, Any]) -> None:
-        """Reset environment for a new task (legacy method, use env_task_init instead)."""
+    def _initialize_config(self) -> None:
+        """初始化配置 (可选覆盖)"""
         pass
 
-    def start_task_recording(self) -> None:
-        """Start recording task execution (legacy method, use env_task_init instead)."""
+    def _validate_config(self) -> None:
+        """验证配置 (可选覆盖)"""
         pass
-
-    def end_task_recording(self, output_path: str) -> None:
-        """End task recording and save to file (legacy method, use env_task_end instead)."""
-        pass
-
-    def evaluate_task(self) -> float:
-        """Evaluate task execution result (legacy method, use env_task_end instead)."""
-        return 0.0
-
-    def get_task_output_dir(self, base_output_dir: str, task_id: str, model_name: str) -> Optional[str]:
-        """
-        Get the output directory for a specific task.
-
-        This determines where task-specific files (recordings, trajectories, etc.)
-        should be saved.
-
-        Args:
-            base_output_dir: Base output directory (e.g., "results")
-            task_id: Task identifier
-            model_name: Model name being used
-
-        Returns:
-            Path to task output directory, or None if not applicable
-
-        Note:
-            Default implementation returns None (no task-specific directory).
-            Subclasses should override if they need per-task directories (e.g., OSWorld).
-        """
-        return None
-
-    def needs_trajectory_saving(self) -> bool:
-        """
-        Check if this environment needs trajectory saving.
-
-        Returns:
-            True if trajectory (screenshots, observations) should be saved
-
-        Note:
-            Default implementation returns False.
-            Subclasses should override if they need trajectory saving (e.g., OSWorld).
-        """
-        return False
-
-    def has_internal_evaluation(self) -> bool:
-        """
-        Check if this environment has internal evaluation capability.
-
-        Returns:
-            True if environment can evaluate task results internally (e.g., OSWorld)
-            False if evaluation should use LLM's final answer (default)
-
-        Note:
-            Default implementation returns False (use LLM output as answer).
-            Subclasses should override to return True if they have internal evaluators.
-        """
-        return False
-
-    def close(self) -> None:
-        """
-        Close and cleanup the environment.
-
-        This is called ONCE after ALL tasks complete, not between tasks.
-        Use reset_for_task() between tasks instead.
-
-        Note:
-            Default implementation does nothing.
-            Subclasses should override if they need cleanup (e.g., OSWorld).
-        """
-        pass
-
-    def update_config(self, **kwargs):
-        """Update environment configuration."""
-        self.config.update(kwargs)
-        print(f"Updated configuration: {kwargs}")
-    
-    def get_config(self, key: str = None):
-        """Get configuration value(s)."""
-        if key:
-            return self.config.get(key)
-        return self.config.copy()
-    
-    def get_environment_info(self) -> Dict[str, Any]:
-        """Get comprehensive environment information."""
-        return {
-            "mode": self.mode,
-            "model_name": self.model_name,
-            "tools": list(self.tools.keys()),
-            "tool_count": len(self.tools),
-            "config": self.config
-        }
-    
-    def save_environment(self, filepath: str):
-        """Save environment configuration to file."""
-        env_data = {
-            "mode": self.mode,
-            "model_name": self.model_name,
-            "config": self.config,
-            "tools": list(self.tools.keys())
-        }
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(env_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"Environment saved to {filepath}")
-    
-    def load_environment(self, filepath: str):
-        """Load environment configuration from file."""
-        with open(filepath, 'r', encoding='utf-8') as f:
-            env_data = json.load(f)
-        
-        # Update configuration
-        self.model_name = env_data.get("model_name", self.model_name)
-        self.config.update(env_data.get("config", {}))
-        
-        # Reinitialize tools
-        self._initialize_tools()
-        
-        print(f"Environment loaded from {filepath}")
-    
-    def initialize_with_task_config(
-        self,
-        task_config: Dict[str, Any]
-    ) -> bool:
-        """
-        使用 Task 配置初始化环境
-        
-        Args:
-            task_config: Task 中的 env_config 部分
-        
-        Returns:
-            True 表示初始化成功
-        """
-        self._task_env_config = task_config
-        
-        # 提取环境特定的配置
-        env_specific_config = task_config.get(self.mode, {})
-        
-        # 子类可覆盖以实现特定的初始化逻辑
-        return self._apply_task_config(env_specific_config)
-    
-    def _apply_task_config(self, env_config: Dict[str, Any]) -> bool:
-        """
-        应用 Task 配置，由子类实现
-        
-        Args:
-            env_config: 环境特定的配置字典
-        
-        Returns:
-            True 表示配置应用成功
-        
-        Note:
-            默认实现：直接返回 True（无配置需要应用）
-            子类可以覆盖此方法以实现特定的配置逻辑
-        """
-        return True
-
-    @classmethod
-    def setup_global_resources(cls, config: Any) -> 'ResourceManager':
-        """
-        类方法：根据配置初始化全局资源管理器
-        
-        这是控制反转的核心方法，由主进程在启动时调用。
-        每个环境子类可以根据自己的需求创建相应的资源管理器。
-        
-        Args:
-            config: 并行运行配置对象，包含环境相关的配置参数
-        
-        Returns:
-            ResourceManager 实例（可以是 NoResourceManager 或具体的重资源管理器）
-        
-        Note:
-            默认实现：返回 NoResourceManager()（不需要重资产）
-            子类应该覆盖此方法以实现特定的资源初始化逻辑（如 VM 池）
-        """
-        from utils.resource_manager import NoResourceManager
-        return NoResourceManager()
-
-    def run_task(self, task: Dict[str, Any], agent_config: Dict[str, Any], logger: logging.Logger) -> Dict[str, Any]:
-        """
-        执行完整的 Agent 任务循环
-        
-        这个方法封装了从任务初始化到结果返回的完整流程：
-        1. 初始化任务环境，获取初始观察
-        2. 执行 Agent 对话循环（Observation -> LLM -> Action -> Observation）
-        3. 提取最终答案
-        4. 执行评估（如果环境支持）
-        5. 保存对话日志（如果环境支持）
-        6. 清理任务环境
-        
-        Args:
-            task: 任务字典，包含 id, question, metadata 等字段
-            agent_config: Agent 配置字典，包含 model_name, max_turns, max_retries 等
-            logger: 日志记录器
-        
-        Returns:
-            包含以下字段的结果字典：
-            {
-                "task_id": str,
-                "question": str,
-                "answer": str,
-                "messages": List[Dict],
-                "success": bool,
-                "error": Optional[str],
-                "evaluation_score": Optional[float]
-            }
-        
-        Note:
-            默认实现：抛出 NotImplementedError
-            子类必须实现此方法以提供具体的任务执行逻辑
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement run_task() method. "
-            "This method should encapsulate the complete agent execution loop."
-        )
-
-
-# Note: Concrete environment implementations have been moved to separate files:
-# - MathEnvironment -> math_environment.py
-# - PythonEnvironment -> python_environment.py
-# - RAGEnvironment -> rag_environment.py
-# - WebEnvironment -> web_environment.py
-# - TBenchEnvironment -> tbench_environment.py

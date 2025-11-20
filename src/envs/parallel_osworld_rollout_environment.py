@@ -115,7 +115,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
             parallel_degree=parallel_degree,
         )
 
-        # 初始化工具注册标记
+        # 工具注册标记（将在 allocate_resource 中注册）
         self._tools_registered = False
 
     # ---------------------------------------------------------------------
@@ -127,6 +127,41 @@ class ParallelOSWorldRolloutEnvironment(Environment):
 
     def get_action_space(self) -> str:
         return self.config.get("osworld", {}).get("action_space", "computer_13")
+
+    def get_system_prompt(self, task_question: str) -> str:
+        """
+        获取系统提示词
+        
+        Args:
+            task_question: 任务问题（用于兼容接口，实际不使用）
+        
+        Returns:
+            完整的系统提示词字符串
+        """
+        from prompts.system_prompts import get_system_prompt as get_prompt_template
+        
+        # 获取环境模式和动作空间
+        environment_mode = self.mode
+        action_space = self.get_action_space()
+        
+        # 获取系统提示词模板
+        system_prompt_template = get_prompt_template(environment_mode, action_space)
+        
+        # 替换工具描述占位符
+        system_prompt = system_prompt_template.replace(
+            "{tool_descriptions}",
+            self.get_tool_descriptions()
+        )
+        
+        # 替换 OSWorld 特定占位符（如 CLIENT_PASSWORD）
+        if "{CLIENT_PASSWORD}" in system_prompt:
+            client_password = self.config.get("osworld", {}).get("client_password", "password")
+            system_prompt = system_prompt.replace("{CLIENT_PASSWORD}", client_password)
+        
+        # 添加任务问题
+        system_prompt = system_prompt + f"\nYou are asked to complete the following task: {task_question}"
+        
+        return system_prompt
 
     def _initialize_config(self):
         """构建 OSWorld 配置"""
@@ -170,7 +205,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
             raise ValueError(f"Invalid observation_type '{observation_type}'. Must be one of {valid_obs}")
 
     def _initialize_tools(self):
-        """工具注册在 DesktopEnv 设置后再进行"""
+        """工具注册在 DesktopEnv 设置后再进行（在 allocate_resource 中调用）"""
         return
 
     # ---------------------------------------------------------------------
@@ -211,6 +246,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         - 在 Worker 本地实例化 DesktopEnv（Attach 模式）
         - DesktopEnv 对象在 Worker 进程中创建，避免跨进程序列化问题
         - 从 self.config 提取配置并传递给 resource_manager.allocate()
+        - 工具注册在 DesktopEnv 实例化后立即进行
         
         Returns:
             True if allocation successful, False otherwise
@@ -253,6 +289,13 @@ class ParallelOSWorldRolloutEnvironment(Environment):
             )
             self._allocated_resource_id = resource_id
             self._set_desktop_env(desktop_env, vm_id=resource_id)
+            
+            # 在 DesktopEnv 实例化后立即注册工具
+            if not self._tools_registered:
+                self._register_tools()
+                self._tools_registered = True
+                logger.info(f"Registered {len(self.tools)} OSWorld tools after DesktopEnv allocation")
+            
             logger.info(f"[resource] worker={worker_id} acquired vm={resource_id} (Attach mode, local instance)")
             return True
         except Exception as exc:
@@ -314,6 +357,10 @@ class ParallelOSWorldRolloutEnvironment(Environment):
             raise ValueError("desktop_env cannot be None when attaching manually")
         self._allocated_resource_id = vm_id
         self._set_desktop_env(desktop_env, vm_id=vm_id)
+        # 注册工具
+        if not self._tools_registered:
+            self._register_tools()
+            self._tools_registered = True
 
     # ---------------------------------------------------------------------
     # DesktopEnv helpers
@@ -327,9 +374,6 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         """
         self._desktop_env = desktop_env
         self.config["osworld_available"] = True
-        if not self._tools_registered:
-            self._register_tools_without_desktop_env()
-            self._tools_registered = True
         logger.info(f"DesktopEnv set (vm_id={vm_id}, Attach mode)")
 
     def env_start(self) -> None:
@@ -353,19 +397,22 @@ class ParallelOSWorldRolloutEnvironment(Environment):
                 self._desktop_env = None
 
     # ---------------------------------------------------------------------
-    # Core interaction methods
+    # Private internal methods (formerly public methods)
     # ---------------------------------------------------------------------
-    def reset(self, task_config: Dict[str, Any]):
+    def _internal_reset(self, task_config: Dict[str, Any]):
+        """内部重置方法（原 reset 方法）"""
         if not self._desktop_env:
             raise ValueError("DesktopEnv not initialized. Call allocate_resource() first.")
         return self._desktop_env.reset(task_config=task_config)
 
-    def step(self, action: str, pause: float = 2):
+    def _internal_step(self, action: str, pause: float = 2):
+        """内部步骤执行方法（原 step 方法）"""
         if not self._desktop_env:
             raise ValueError("DesktopEnv not initialized")
         return self._desktop_env.step(action, pause=pause)
 
-    def get_obs(self) -> Dict[str, Any]:
+    def _internal_get_obs(self) -> Dict[str, Any]:
+        """内部获取观察方法（原 get_obs 方法）"""
         if not self._desktop_env:
             raise ValueError("DesktopEnv not initialized")
         obs = self._desktop_env.get_obs()
@@ -382,17 +429,20 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         logger.warning(f"Unexpected observation type {type(obs)} from DesktopEnv._get_obs(), returning empty dict")
         return {}
 
-    def evaluate(self) -> float:
+    def _internal_evaluate(self) -> float:
+        """内部评估方法（原 evaluate 方法）"""
         if not self._desktop_env:
             raise ValueError("DesktopEnv not initialized")
         return float(self._desktop_env.evaluate())
 
-    def start_recording(self):
+    def _internal_start_recording(self):
+        """内部开始录屏方法（原 start_recording 方法）"""
         if not self._desktop_env:
             raise ValueError("DesktopEnv not initialized")
         self._desktop_env.start_recording()
 
-    def end_recording(self, output_path: str):
+    def _internal_end_recording(self, output_path: str):
+        """内部结束录屏方法（原 end_recording 方法）"""
         if not self._desktop_env:
             raise ValueError("DesktopEnv not initialized")
         self._desktop_env.end_recording(output_path)
@@ -520,6 +570,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
     # Task lifecycle
     # ---------------------------------------------------------------------
     def env_task_init(self, task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """初始化任务环境并返回初始观察"""
         if not self._desktop_env:
             raise ValueError("DesktopEnv not initialized")
 
@@ -536,18 +587,20 @@ class ParallelOSWorldRolloutEnvironment(Environment):
                 except Exception as exc:
                     logger.warning(f"Failed to record instance-task mapping: {exc}")
 
-        self.reset(task)
+        # 使用内部重置方法
+        self._internal_reset(task)
 
         enable_recording = self.config.get("osworld", {}).get("enable_recording", True)
         if enable_recording:
             try:
-                self.start_recording()
+                self._internal_start_recording()
             except Exception as exc:
                 logger.warning(f"Screen recording failed: {exc}")
 
         self._current_trajectory = []
 
-        raw_obs = self.get_obs()
+        # 使用内部获取观察方法
+        raw_obs = self._internal_get_obs()
         if not raw_obs:
             logger.warning("Failed to get initial observation")
             return None
@@ -564,12 +617,13 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         task_output_dir: Optional[str] = None,
         final_answer: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
+        """结束任务执行：停止录屏、保存轨迹、返回最终结果"""
         enable_recording = self.config.get("osworld", {}).get("enable_recording", True)
 
         if enable_recording and task_output_dir:
             try:
                 recording_path = os.path.join(task_output_dir, f"task_{task_id}.mp4")
-                self.end_recording(recording_path)
+                self._internal_end_recording(recording_path)
             except Exception as exc:
                 logger.warning(f"Failed to save recording: {exc}")
 
@@ -619,9 +673,10 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         )
 
     # ---------------------------------------------------------------------
-    # Tool registration (copied from OSWorldEnvironment)
+    # Tool registration
     # ---------------------------------------------------------------------
     def _register_computer13_tools(self):
+        """注册 computer_13 action space 工具"""
         from tools.osworld_tools import (
             MouseMoveTool,
             MouseClickTool,
@@ -656,6 +711,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
             self.register_tool(tool)
 
     def _register_pyautogui_tools(self):
+        """注册 pyautogui action space 工具"""
         from tools.osworld_tools import ExecutePythonScriptTool, ControlTool
 
         tools: List[Tool] = [
@@ -666,7 +722,8 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         for tool in tools:
             self.register_tool(tool)
 
-    def _register_tools_without_desktop_env(self):
+    def _register_tools(self):
+        """注册工具（在 DesktopEnv 可用后调用）"""
         if self._desktop_env is None:
             raise ValueError(
                 "DesktopEnv must be set before registering tools. "
@@ -685,7 +742,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         logger.info(f"Registered {len(self.tools)} OSWorld tools for '{action_space}' mode")
 
     # ---------------------------------------------------------------------
-    # Observation formatting
+    # Observation formatting for messages
     # ---------------------------------------------------------------------
     def format_initial_observation_for_message(self, initial_obs: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -728,10 +785,8 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         
         封装从任务初始化到结果返回的完整流程，包括：
         - 任务初始化（env_task_init）
-        - Agent 对话循环（Observation -> LLM -> Action -> Observation）
-        - 答案提取
-        - 环境评估（如果支持）
-        - 日志保存
+        - Agent 对话循环（LLM -> Tool -> Env）
+        - 评估（如果支持）
         - 任务清理（env_task_end）
         
         Args:
@@ -786,7 +841,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
         if self.has_internal_evaluation():
             try:
                 logger.info(f"Evaluating task {task_id} via environment evaluator...")
-                evaluation_score = self.evaluate()
+                evaluation_score = self._internal_evaluate()
                 result["evaluation_score"] = evaluation_score
                 result["answer"] = str(evaluation_score)
                 # 如果任务输出目录存在，将评估结果写入文件
@@ -1088,4 +1143,3 @@ class ParallelOSWorldRolloutEnvironment(Environment):
             else:
                 self._openai_client = openai.OpenAI(api_key=api_key)
         return self._openai_client
-
