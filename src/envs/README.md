@@ -1,159 +1,134 @@
+
 # AgentFlow Environment
 
-这个模块提供了基于继承的 Environment 类体系来管理 AgentFlow 中的工具和配置。
+这个模块提供了基于继承的 `Environment` 类体系，用于管理 AgentFlow 中的工具、配置、系统提示词以及底层资源。
 
-## 功能特性
+## 模块结构
 
-- **继承架构**: 使用抽象基类 Environment，具体环境类继承实现
-- **工具管理**: 注册、获取、执行各种工具
-- **环境类型**: MathEnvironment、PythonEnvironment、RAGEnvironment、WebEnvironment
-- **配置管理**: 统一管理 API 密钥、模型设置等配置
-- **工具模式转换**: 自动将工具转换为 OpenAI 函数调用格式
-- **环境持久化**: 支持保存和加载环境配置
+- **核心基类**: `Environment` (`enviroment.py`) - 所有环境的抽象基类。
+- **数据模型**: `data_models.py` - 定义了轨迹、观察和步骤的标准数据结构。
+- **工厂模式**: `factory.py` - 统一的环境注册与创建入口。
+- **内置环境**: 包含 Math, Python, Web, RAG, OSWorld, TBench 等多种实现。
 
-## 快速开始
+## 1. 功能特性
+
+- **继承架构**: 强制规范子类实现 `mode`, `_initialize_tools`, `run_task` 等核心接口。
+- **工具管理**: 自动化管理工具注册 (`register_tool`)、Schema 生成及安全执行 (`execute_tool`)。
+- **标准化交互**: 使用 `TrajectoryStep` 和 `Observation` 数据类规范交互格式。
+- **资源管理**: 支持重型资源（如虚拟机、浏览器）的生命周期管理 (`setup_global_resources`, `env_start`, `env_close`)。
+
+## 2. 快速开始
 
 ### 基本使用
 
 ```python
-from envs import create_math_environment
+from envs import create_math_environment, create_environment
 
-# 创建数学环境
-env = create_math_environment()
+# 方式 1: 使用特定工厂函数
+env = create_math_environment(model_name="gpt-4")
 
-# 执行工具
-result = env.execute_tool("calculator", {"expressions": ["2+2", "sqrt(16)"]})
+# 方式 2: 使用通用工厂 (推荐)
+env = create_environment("math", model_name="gpt-4")
+
+# 运行任务
+task = {"question": "Calculate 2+2", "id": "test_01"}
+result = env.run_task(task, agent_config={}, logger=None)
 print(result)
-```
+````
 
-### 不同环境类型
+## 3\. 内置环境类型 (Built-in Environments)
 
-```python
-from envs import MathEnvironment, PythonEnvironment, RAGEnvironment, WebEnvironment
+框架内置了多种环境以适应不同任务需求：
 
-# 数学环境
-math_env = MathEnvironment()
+| 环境类 (`Class`) | 模式名 (`mode`) | 主要功能 | 关键工具/特性 |
+| :--- | :--- | :--- | :--- |
+| **MathEnvironment** | `"math"` | 数学计算 | `CalculatorTool` |
+| **PythonEnvironment** | `"python"` | 代码执行 | `PythonInterpreterTool` |
+| **WebEnvironment** | `"web"` | 网页浏览 | `WebSearchTool`, 浏览器控制 |
+| **RAGEnvironment** | `"rag"` | 知识库检索 | `QueryRAGIndexTool` |
+| **OSWorldEnvironment** | `"osworld"` | 桌面自动化 | `DesktopEnv`, `Computer13`/`PyAutoGUI` 工具集 |
+| **TBenchEnvironment** | `"tbench"` | 配置基准测试 | 仅用于配置场景，无默认工具 |
 
-# Python环境
-py_env = PythonEnvironment()
+## 4\. 开发指南 (Development Guide)
 
-# RAG环境
-rag_env = RAGEnvironment()
-
-# Web环境
-web_env = WebEnvironment()
-```
-
-### 自定义配置
+### 步骤 1: 继承与接口实现
 
 ```python
-# 创建带自定义配置的环境
-env = Environment(
-    mode="web",
-    model_name="gpt-4",
-    web_search_top_k=10,
-    web_search_type="news",
-    custom_param="value"
-)
+from envs import Environment
+from envs.data_models import Observation
+
+class MyCustomEnvironment(Environment):
+    @property
+    def mode(self) -> str:
+        return "custom"  # 唯一标识符
+
+    def _initialize_tools(self):
+        # 注册工具
+        self.register_tool(MyTool())
+
+    def run_task(self, task, agent_config, logger) -> Dict:
+        # 核心执行逻辑
+        return {"answer": "result", "success": True}
 ```
 
-## API 参考
+### 步骤 2: 环境注册 (必须)
 
-### Environment 基类（抽象类）
-
-#### 构造函数
+为了让 `create_environment` 工厂识别新环境，必须在模块加载时注册：
 
 ```python
-Environment(
-    model_name: str = "gpt-4.1-2025-04-14",
-    openai_api_key: Optional[str] = None,
-    openai_api_url: Optional[str] = None,
-    **kwargs
-)
+from envs.factory import register_environment
+register_environment("custom", MyCustomEnvironment)
 ```
 
-### 具体环境类
+### 步骤 3: 使用数据模型 (推荐)
 
-- **MathEnvironment**: 数学计算环境
-- **PythonEnvironment**: Python 解释器环境
-- **RAGEnvironment**: RAG 检索环境
-- **WebEnvironment**: 网络搜索环境
+建议在 `run_task` 中使用标准数据模型来记录轨迹：
 
-#### 主要方法
+```python
+from envs.data_models import TrajectoryStep, Observation
 
-- `register_tool(tool: Tool)`: 注册工具
-- `unregister_tool(tool_name: str)`: 注销工具
-- `get_tool(tool_name: str)`: 获取工具
-- `list_tools() -> List[str]`: 列出所有工具
-- `execute_tool(tool_name: str, params: Union[str, dict], **kwargs) -> str`: 执行工具
-- `get_tool_schemas() -> List[Dict[str, Any]]`: 获取工具模式（用于 OpenAI 函数调用）
-- `get_tool_descriptions() -> str`: 获取工具描述
-- `switch_mode(new_mode: str, **kwargs)`: 切换环境模式
-- `update_config(**kwargs)`: 更新配置
-- `get_config(key: str = None)`: 获取配置
-- `save_environment(filepath: str)`: 保存环境配置
-- `load_environment(filepath: str)`: 加载环境配置
+# 创建观察对象
+obs = Observation(type="text", content="Tool output...")
+# 记录步骤
+step = TrajectoryStep(step_id=1, action="tool_name", action_input={...}, observations=[obs])
+```
 
-### 便利函数
+## 5\. OSWorld 环境特别说明
 
-- `create_math_environment(**kwargs)`: 创建数学环境
-- `create_python_environment(**kwargs)`: 创建 Python 环境
-- `create_rag_environment(**kwargs)`: 创建 RAG 环境
-- `create_web_environment(**kwargs)`: 创建 Web 环境
+`OSWorldEnvironment` 是一个复杂的桌面自动化环境，支持虚拟机控制。
 
-## 环境类型
+### 核心配置 (`kwargs`)
 
-### MathEnvironment
+  - **`provider_name`**: VM 提供商 (`vmware`, `aliyun`, `aws` 等)。
+  - **`path_to_vm`**: 虚拟机镜像路径。
+  - **`action_space`**: 动作空间类型 (`computer_13` 或 `pyautogui`)。
+  - **`observation_type`**: 观察类型 (`screenshot`, `a11y_tree`, `screenshot_a11y_tree`)。
 
-- **工具**: CalculatorTool
-- **用途**: 数学计算和表达式求值
-- **创建**: `MathEnvironment()` 或 `create_math_environment()`
+### 生命周期
 
-### PythonEnvironment
+OSWorld 需要显式的生命周期管理：
 
-- **工具**: PythonInterpreterTool
-- **用途**: Python 代码执行和调试
-- **创建**: `PythonEnvironment()` 或 `create_python_environment()`
+1.  **`env_start()`**: 初始化虚拟机和桌面连接。
+2.  **`reset(task)`**: 重置环境状态以开始新任务。
+3.  **`env_close()`**: 释放虚拟机资源。
 
-### RAGEnvironment
+## 6\. API 参考
 
-- **工具**: QueryRAGIndexTool
-- **用途**: 检索增强生成，基于知识库问答
-- **创建**: `RAGEnvironment()` 或 `create_rag_environment()`
+### Environment 基类
 
-### WebEnvironment
+  - `register_tool(tool)`: 注册工具。
+  - `execute_tool(name, params)`: 安全执行工具。
+  - `get_system_prompt(**kwargs)`: 获取填充后的 System Prompt。
 
-- **工具**: WebSearchTool, WebVisitTool
-- **用途**: 网络搜索和网页内容提取
-- **创建**: `WebEnvironment()` 或 `create_web_environment()`
+### Factory (envs.factory)
 
-## 配置参数
+  - `create_environment(mode, **kwargs)`: 创建环境实例。
+  - `register_environment(mode, cls)`: 注册新环境类。
+  - `list_registered_environments()`: 查看所有可用环境。
 
-### 通用配置
+### Data Models (envs.data\_models)
 
-- `model_name`: OpenAI 模型名称
-- `openai_api_key`: OpenAI API 密钥
-- `openai_api_url`: OpenAI API URL
+  - **`Observation`**: `type` (text/image), `content`, `metadata`。
+  - **`TrajectoryStep`**: `action`, `input`, `thought`, `observations`。
+  - **`TaskTrajectory`**: 包含完整的 `steps` 列表和任务元数据。
 
-### WebEnvironment 配置
-
-- `web_search_top_k`: 搜索结果数量（默认 5）
-- `web_search_type`: 搜索类型（"search", "news", "images"）
-- `web_search_max_workers`: 并发搜索数量（默认 5）
-- `web_visit_summary_model`: 网页内容摘要模型
-
-### RAGEnvironment 配置
-
-- `index_path`: RAG 索引路径
-- `kb_path`: 知识库路径
-
-## 示例
-
-查看 `example_usage.py` 文件获取更多使用示例。
-
-## 注意事项
-
-1. 确保设置了必要的环境变量（OPENAI_API_KEY 等）
-2. 不同模式需要不同的工具依赖
-3. RAG 模式需要先构建索引
-4. Web 模式需要 Serper API 密钥
