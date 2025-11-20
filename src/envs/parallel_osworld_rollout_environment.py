@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.enviroment import Environment, Tool
 from envs.data_models import Observation
 from utils.desktop_env.desktop_env import DesktopEnv
-from utils.resource_manager import HeavyResourceManager
+from utils.resource_manager import HeavyResourceManager, ResourceManager, NoResourceManager, VMPoolResourceManager
 from utils.instance_tracker import get_instance_tracker
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,54 @@ logger = logging.getLogger(__name__)
 
 class ParallelOSWorldRolloutEnvironment(Environment):
     """Parallel OSWorld Environment built directly on Environment base class."""
+
+    @classmethod
+    def setup_global_resources(cls, config: Any) -> ResourceManager:
+        """
+        根据配置初始化全局资源管理器（VM 池）
+        
+        Args:
+            config: 并行运行配置对象，需要包含：
+                - env_mode: 环境模式（应为 "osworld"）
+                - use_resource_pool: 是否使用资源池
+                - num_vms: VM 池大小
+                - env_kwargs: 环境配置参数（provider_name, path_to_vm, snapshot_name 等）
+        
+        Returns:
+            ResourceManager 实例（VMPoolResourceManager 或 NoResourceManager）
+        """
+        # 检查是否需要创建 VM 池
+        if not (hasattr(config, 'env_mode') and config.env_mode == "osworld"):
+            logger.info("Not OSWorld mode, using NoResourceManager")
+            return NoResourceManager()
+        
+        if not (hasattr(config, 'use_resource_pool') and config.use_resource_pool):
+            logger.info("Resource pool disabled, using NoResourceManager")
+            return NoResourceManager()
+        
+        # 创建 VM 池资源管理器
+        logger.info("Initializing VM pool (Distributed Worker Architecture)...")
+        env_kwargs = getattr(config, 'env_kwargs', {}) or {}
+        pool_config = {
+            "num_vms": getattr(config, 'num_vms', 3),
+            "provider_name": env_kwargs.get("provider_name", "vmware"),
+            "path_to_vm": env_kwargs.get("path_to_vm"),
+            "snapshot_name": env_kwargs.get("snapshot_name", "init_state"),
+            "action_space": env_kwargs.get("action_space", "computer_13"),
+            "screen_size": (
+                env_kwargs.get("screen_width", 1920),
+                env_kwargs.get("screen_height", 1080),
+            ),
+            "headless": env_kwargs.get("headless", False),
+            "require_a11y_tree": env_kwargs.get("require_a11y_tree", True),
+            "require_terminal": env_kwargs.get("require_terminal", False),
+            "os_type": env_kwargs.get("os_type", "Ubuntu"),
+            "client_password": env_kwargs.get("client_password", "password"),
+        }
+        resource_manager = VMPoolResourceManager(pool_config=pool_config)
+        resource_manager.initialize()
+        logger.info("VM pool initialized successfully (Distributed Worker Architecture)")
+        return resource_manager
 
     def __init__(
         self,
@@ -635,4 +683,409 @@ class ParallelOSWorldRolloutEnvironment(Environment):
             self._register_computer13_tools()
 
         logger.info(f"Registered {len(self.tools)} OSWorld tools for '{action_space}' mode")
+
+    # ---------------------------------------------------------------------
+    # Observation formatting
+    # ---------------------------------------------------------------------
+    def format_initial_observation_for_message(self, initial_obs: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        格式化初始观察结果，将其转换为消息内容部分
+        
+        Args:
+            initial_obs: 初始观察字典，格式为 {"text": str, "image": str (base64)}
+        
+        Returns:
+            消息内容部分列表
+        """
+        if not initial_obs:
+            return []
+        
+        content_parts: List[Dict[str, Any]] = []
+        
+        # 添加文本部分
+        text_part = initial_obs.get("text")
+        if text_part:
+            content_parts.append({"type": "text", "text": f"\n--- Initial Page State ---\n{text_part}"})
+        
+        # 添加图片部分
+        image_part = initial_obs.get("image")
+        if image_part:
+            content_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{image_part}", "detail": "high"},
+                }
+            )
+        
+        return content_parts
+
+    # ---------------------------------------------------------------------
+    # Agent execution (run_task and helpers)
+    # ---------------------------------------------------------------------
+    def run_task(self, task: Dict[str, Any], agent_config: Dict[str, Any], logger: logging.Logger) -> Dict[str, Any]:
+        """
+        执行完整的 Agent 任务循环
+        
+        封装从任务初始化到结果返回的完整流程，包括：
+        - 任务初始化（env_task_init）
+        - Agent 对话循环（Observation -> LLM -> Action -> Observation）
+        - 答案提取
+        - 环境评估（如果支持）
+        - 日志保存
+        - 任务清理（env_task_end）
+        
+        Args:
+            task: 任务字典，包含 id, question, metadata 等字段
+            agent_config: Agent 配置字典，包含 model_name, max_turns, max_retries 等
+            logger: 日志记录器
+        
+        Returns:
+            包含 task_id, question, answer, messages, success 等字段的结果字典
+        """
+        if not self._desktop_env:
+            raise ValueError("DesktopEnv not initialized. Call allocate_resource() first.")
+
+        task_id = task.get("id", "unknown")
+        question = task.get("question", "")
+        
+        # 获取 Agent 配置参数
+        model_name = agent_config.get("model_name", "gpt-4.1-2025-04-14")
+        max_turns = agent_config.get("max_turns", 3)
+        max_retries = agent_config.get("max_retries", 3)
+
+        # 获取任务输出目录（如果环境支持）
+        task_output_dir = None
+        if hasattr(self, "get_task_output_dir") and callable(self.get_task_output_dir):
+            task_output_dir = self.get_task_output_dir(
+                agent_config.get("output_dir", "results"),
+                task_id,
+                model_name
+            )
+
+        # 初始化任务环境，获取初始观察
+        initial_obs = self.env_task_init(task)
+
+        # 执行对话，获取完整的消息列表
+        messages = self._run_conversation(question, initial_obs, model_name, max_turns, max_retries, logger)
+        
+        # 从消息中提取最终答案
+        final_answer = self._extract_final_answer(messages)
+
+        # 构建任务结果字典
+        result = {
+            "task_id": task_id,
+            "question": question,
+            "answer": final_answer,
+            "messages": messages,
+            "success": True,
+            "error": None,
+        }
+
+        # 如果环境支持内部评估，则执行评估并更新结果
+        evaluation_score = None
+        if self.has_internal_evaluation():
+            try:
+                logger.info(f"Evaluating task {task_id} via environment evaluator...")
+                evaluation_score = self.evaluate()
+                result["evaluation_score"] = evaluation_score
+                result["answer"] = str(evaluation_score)
+                # 如果任务输出目录存在，将评估结果写入文件
+                if task_output_dir:
+                    result_file = os.path.join(task_output_dir, "result.txt")
+                    with open(result_file, "w", encoding="utf-8") as f:
+                        f.write(f"{evaluation_score}\n")
+            except Exception as exc:
+                # 评估失败不影响主流程，只记录警告
+                logger.warning(f"Internal evaluation for task {task_id} failed: {exc}")
+
+        # 调用环境的任务结束方法，进行清理和收尾工作
+        try:
+            self.env_task_end(
+                task_id,
+                task_output_dir if task_output_dir else None,
+                result.get("answer")
+            )
+        except Exception as exc:
+            # 任务结束处理失败不影响返回结果，只记录警告
+            logger.warning(f"Failed to finalize task {task_id}: {exc}")
+
+        # 如果任务输出目录存在，保存对话日志
+        if task_output_dir:
+            self._save_conversation_log(
+                task_output_dir,
+                task_id,
+                question,
+                model_name,
+                messages,
+                result
+            )
+
+        return result
+
+    def _run_conversation(
+        self,
+        question: str,
+        initial_obs: Optional[Dict[str, Any]],
+        model_name: str,
+        max_turns: int,
+        max_retries: int,
+        logger: logging.Logger,
+    ) -> List[Dict[str, Any]]:
+        """
+        执行 Agent 对话循环
+        
+        Args:
+            question: 任务问题
+            initial_obs: 初始观察结果
+            model_name: LLM 模型名称
+            max_turns: 最大对话轮数
+            max_retries: 每次调用的最大重试次数
+            logger: 日志记录器
+        
+        Returns:
+            完整的消息列表
+        """
+        system_prompt = self.get_system_prompt(question)
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+        ]
+
+        # 构建用户消息内容，包含问题文本
+        user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"Question: {question}\n"}]
+        # 如果环境支持格式化初始观察的功能，则将初始观察添加到消息中
+        if initial_obs is not None:
+            try:
+                obs_content_parts = self.format_initial_observation_for_message(initial_obs)
+                # 如果返回的是列表，则扩展用户内容；否则作为单个文本添加
+                if isinstance(obs_content_parts, list):
+                    user_content.extend(obs_content_parts)
+                else:
+                    user_content.append({"type": "text", "text": str(obs_content_parts)})
+                logger.info("Initial observation added to conversation context")
+            except Exception as exc:
+                # 格式化失败不影响主流程，只记录警告
+                logger.warning(f"Failed to format initial observation: {exc}")
+        messages.append({"role": "user", "content": user_content})
+
+        client = self._get_openai_client()
+        turn_count = 0
+        step_idx = 0
+
+        # 主对话循环：在最大轮次限制内进行多轮对话
+        while turn_count < max_turns:
+            retry = 0
+            # 重试循环：每次 API 调用失败后会重试，直到达到最大重试次数
+            while retry < max_retries:
+                try:
+                    # 调用 OpenAI API 获取 LLM 响应
+                    response = client.chat.completions.create(  # type: ignore[arg-type]
+                        model=model_name,
+                        messages=messages,  # type: ignore[arg-type]
+                        tools=self.get_tool_schemas(),  # type: ignore[arg-type]
+                    )
+                    # 验证 API 响应是否有效
+                    if not hasattr(response, "choices") or not response.choices:
+                        raise ValueError("OpenAI API returned empty response")
+
+                    # 提取助手消息并添加到消息列表
+                    assistant_message = response.choices[0].message
+                    assistant_dict = self._normalize_message(assistant_message)
+                    messages.append(assistant_dict)
+
+                    # 如果 LLM 返回了工具调用，则执行工具
+                    if assistant_message.tool_calls:
+                        tool_call = assistant_message.tool_calls[0]
+                        function_call = getattr(tool_call, "function", None)
+                        # 验证工具调用是否包含函数信息
+                        if not function_call:
+                            raise ValueError("Tool call missing function payload")
+                        tool_name = function_call.name
+                        tool_args = json.loads(function_call.arguments)
+                        logger.info(f"Turn {turn_count}: executing tool {tool_name}")
+
+                        # 执行工具，获取执行结果
+                        tool_result_raw = self.execute_tool(tool_name, tool_args)
+                        # 将工具结果转换为字典格式
+                        if isinstance(tool_result_raw, dict):
+                            tool_result = tool_result_raw
+                        else:
+                            try:
+                                # 尝试将字符串解析为 JSON
+                                tool_result = json.loads(tool_result_raw)
+                            except json.JSONDecodeError:
+                                # 解析失败则使用默认格式
+                                tool_result = {"status": "unknown", "response": str(tool_result_raw), "observation": {}}
+
+                        # 如果工具返回了观察结果，将其添加到轨迹中
+                        observation = tool_result.get("observation") or {}
+                        if observation:
+                            step_idx += 1
+                            if hasattr(self, "add_step_to_trajectory") and callable(self.add_step_to_trajectory):
+                                self.add_step_to_trajectory(observation, step_idx)
+
+                        # 格式化工具响应内容，准备添加到消息中
+                        content_payload = self._format_tool_response_content(tool_result, observation)
+
+                        # 将工具执行结果作为 tool 角色的消息添加到对话中
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "name": tool_name,
+                                "content": content_payload,
+                            }
+                        )
+                        # 工具执行成功，跳出重试循环，进入下一轮对话
+                        break
+
+                    else:
+                        # LLM 返回了最终答案（没有工具调用），对话结束
+                        logger.info(f"Turn {turn_count}: final answer produced")
+                        return messages
+
+                except Exception as exc:
+                    # API 调用或工具执行失败，进行重试
+                    retry += 1
+                    logger.warning(f"Retry {retry}/{max_retries} due to error: {exc}")
+                    # 如果达到最大重试次数，则抛出异常
+                    if retry >= max_retries:
+                        raise
+
+            # 完成一轮对话（可能包含多次重试），进入下一轮
+            turn_count += 1
+
+        # 达到最大轮次仍未获得最终答案，返回当前消息列表
+        logger.warning("Max turns reached without final answer")
+        return messages
+
+    def _format_tool_response_content(self, tool_result: Dict[str, Any], observation: Dict[str, Any]) -> Any:
+        """
+        格式化工具响应内容，准备添加到消息中
+        
+        Args:
+            tool_result: 工具执行结果字典
+            observation: 观察结果字典
+        
+        Returns:
+            格式化的内容（字符串或内容列表）
+        """
+        content_parts: List[Dict[str, Any]] = []
+        base_result = {
+            "status": tool_result.get("status", "unknown"),
+            "response": tool_result.get("response", ""),
+        }
+        # 添加工具执行的基础结果（状态和响应）
+        content_parts.append({"type": "text", "text": f"Execution Result:\n{json.dumps(base_result, indent=2)}"})
+
+        # 如果观察结果存在，添加观察内容（文本和/或图片）
+        if observation:
+            text_part = observation.get("text")
+            image_part = observation.get("image")
+            # 如果有文本观察，添加文本内容
+            if text_part:
+                content_parts.append({"type": "text", "text": f"\n--- Current Page State ---\n{text_part}"})
+            # 如果有图片观察，添加图片内容（base64 编码）
+            if image_part:
+                content_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image_part}", "detail": "high"},
+                    }
+                )
+
+        # 如果只有一个内容部分，直接返回文本；否则返回内容列表
+        if len(content_parts) == 1:
+            return content_parts[0]["text"]
+        return content_parts
+
+    def _extract_final_answer(self, messages: List[Dict[str, Any]]) -> str:
+        """
+        从消息列表中提取最终答案
+        从后往前遍历消息，找到第一个没有工具调用的助手消息作为最终答案
+        """
+        # 从后往前遍历消息列表，查找最后一个不含工具调用的助手消息
+        for message in reversed(messages):
+            normalized = self._normalize_message(message)
+            # 如果是助手消息且没有工具调用，则认为是最终答案
+            if normalized.get("role") == "assistant" and not normalized.get("tool_calls"):
+                content = normalized.get("content", "")
+                # 如果 content 是列表，提取文本部分
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            return part.get("text", "")
+                    return ""
+                return str(content)
+        # 如果找不到最终答案，返回默认消息
+        return "No final answer found"
+
+    def _normalize_message(self, message: Any) -> Dict[str, Any]:
+        """
+        将消息对象标准化为字典格式
+        如果消息对象有 model_dump 方法（如 Pydantic 模型），则调用该方法；否则直接返回原对象
+        """
+        # 如果消息对象是 Pydantic 模型，则使用 model_dump 方法转换为字典
+        if hasattr(message, "model_dump"):
+            return message.model_dump()
+        # 如果已经是字典，直接返回
+        if isinstance(message, dict):
+            return message
+        # 否则尝试转换为字符串表示
+        return {"role": "unknown", "content": str(message)}
+
+    def _save_conversation_log(
+        self,
+        output_dir: str,
+        task_id: str,
+        question: str,
+        model_name: str,
+        messages: List[Dict[str, Any]],
+        result: Dict[str, Any],
+    ) -> None:
+        """
+        保存对话日志到 JSON 文件
+        
+        Args:
+            output_dir: 输出目录
+            task_id: 任务 ID
+            question: 问题文本
+            model_name: 模型名称
+            messages: 消息列表
+            result: 任务结果字典
+        """
+        # 将消息列表中的每个消息标准化为可序列化的字典格式
+        serializable_messages = [self._normalize_message(msg) for msg in messages]
+        # 构建对话数据字典
+        conversation_data = {
+            "task_id": task_id,
+            "question": question,
+            "model": model_name,
+            "timestamp": datetime.now().isoformat(),
+            "success": result.get("success", False),
+            "evaluation_score": result.get("evaluation_score"),
+            "messages": serializable_messages,
+        }
+        conversation_file = os.path.join(output_dir, "conversation.json")
+        # 将对话数据写入 JSON 文件
+        with open(conversation_file, "w", encoding="utf-8") as f:
+            json.dump(conversation_data, f, indent=2, ensure_ascii=False)
+
+    def _get_openai_client(self):
+        """
+        获取 OpenAI 客户端实例（单例模式）
+        如果客户端未初始化，则从环境变量或配置中读取配置并创建新实例
+        """
+        if not hasattr(self, '_openai_client') or self._openai_client is None:
+            import openai
+            api_key = self.config.get("openai_api_key") or os.environ.get("OPENAI_API_KEY", "")
+            base_url = self.config.get("openai_api_url") or os.environ.get("OPENAI_API_URL") or os.environ.get("OPENAI_API_BASE")
+            
+            openai.api_key = api_key
+            # 如果配置了自定义 base_url，则使用自定义 URL；否则使用默认 URL
+            if base_url:
+                openai.base_url = base_url
+                self._openai_client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            else:
+                self._openai_client = openai.OpenAI(api_key=api_key)
+        return self._openai_client
 

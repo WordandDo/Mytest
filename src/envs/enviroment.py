@@ -4,6 +4,7 @@ Environment classes for AgentFlow - manages tools and configuration for agent en
 
 import os
 import json
+import logging
 from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 from abc import ABC, abstractmethod
 import sys
@@ -741,6 +742,65 @@ class Environment(ABC):
             子类可以覆盖此方法以实现特定的配置逻辑
         """
         return True
+
+    @classmethod
+    def setup_global_resources(cls, config: Any) -> 'ResourceManager':
+        """
+        类方法：根据配置初始化全局资源管理器
+        
+        这是控制反转的核心方法，由主进程在启动时调用。
+        每个环境子类可以根据自己的需求创建相应的资源管理器。
+        
+        Args:
+            config: 并行运行配置对象，包含环境相关的配置参数
+        
+        Returns:
+            ResourceManager 实例（可以是 NoResourceManager 或具体的重资源管理器）
+        
+        Note:
+            默认实现：返回 NoResourceManager()（不需要重资产）
+            子类应该覆盖此方法以实现特定的资源初始化逻辑（如 VM 池）
+        """
+        from utils.resource_manager import NoResourceManager
+        return NoResourceManager()
+
+    def run_task(self, task: Dict[str, Any], agent_config: Dict[str, Any], logger: logging.Logger) -> Dict[str, Any]:
+        """
+        执行完整的 Agent 任务循环
+        
+        这个方法封装了从任务初始化到结果返回的完整流程：
+        1. 初始化任务环境，获取初始观察
+        2. 执行 Agent 对话循环（Observation -> LLM -> Action -> Observation）
+        3. 提取最终答案
+        4. 执行评估（如果环境支持）
+        5. 保存对话日志（如果环境支持）
+        6. 清理任务环境
+        
+        Args:
+            task: 任务字典，包含 id, question, metadata 等字段
+            agent_config: Agent 配置字典，包含 model_name, max_turns, max_retries 等
+            logger: 日志记录器
+        
+        Returns:
+            包含以下字段的结果字典：
+            {
+                "task_id": str,
+                "question": str,
+                "answer": str,
+                "messages": List[Dict],
+                "success": bool,
+                "error": Optional[str],
+                "evaluation_score": Optional[float]
+            }
+        
+        Note:
+            默认实现：抛出 NotImplementedError
+            子类必须实现此方法以提供具体的任务执行逻辑
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement run_task() method. "
+            "This method should encapsulate the complete agent execution loop."
+        )
 
 
 # Note: Concrete environment implementations have been moved to separate files:

@@ -62,6 +62,34 @@ def is_registered(mode: str) -> bool:
     return mode in _ENVIRONMENT_REGISTRY
 
 
+def get_environment_class(mode: str) -> Type[Environment]:
+    """
+    Get the environment class for a given mode.
+    
+    Args:
+        mode: Environment mode name
+    
+    Returns:
+        Environment class (not an instance)
+    
+    Raises:
+        ValueError: If mode is not registered
+    
+    Example:
+        >>> EnvClass = get_environment_class("osworld")
+        >>> resource_manager = EnvClass.setup_global_resources(config)
+    """
+    if mode not in _ENVIRONMENT_REGISTRY:
+        available_modes = ", ".join(sorted(_ENVIRONMENT_REGISTRY.keys()))
+        raise ValueError(
+            f"Unknown environment mode: '{mode}'. "
+            f"Available modes: {available_modes}. "
+            f"Use register_environment() to add new modes."
+        )
+    
+    return _ENVIRONMENT_REGISTRY[mode]
+
+
 def create_environment(mode: str, **kwargs) -> Environment:
     """
     Create an environment instance using the factory pattern.
@@ -157,6 +185,15 @@ def _auto_register_builtin_environments():
     try:
         from .osworld_environment import OSWorldEnvironment
         register_environment("osworld", OSWorldEnvironment)
+    except ImportError:
+        pass
+    
+    # Register parallel rollout environment (for parallel execution)
+    try:
+        from .parallel_osworld_rollout_environment import ParallelOSWorldRolloutEnvironment
+        # Use "osworld_parallel" mode for parallel rollout, but fallback to "osworld" if needed
+        # In practice, parallel rollout should use the parallel environment class
+        register_environment("osworld_parallel", ParallelOSWorldRolloutEnvironment)
     except ImportError:
         pass
 
