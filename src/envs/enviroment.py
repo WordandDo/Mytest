@@ -39,15 +39,29 @@ Environment Base Class & Development Guide
    如果 System Prompt 中包含自定义占位符 (如 {CLIENT_PASSWORD}):
    - 重写 `_replace_prompt_placeholders(self, prompt)` 方法来注入动态信息。
 
+5. 共享数据结构 (Shared Data Models):
+   所有环境在记录/返回观测与轨迹时，应复用 `envs.data_models` 中的
+   `Observation`, `TrajectoryStep`, `TaskTrajectory` 数据类，从而保证与
+   data_synthesis 管线的数据格式一致。本文档通过导入并导出这些类型，
+   方便开发者直接复用。
+
 =============================================================================
 """
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional, Union
 
+from envs.data_models import Observation, TrajectoryStep, TaskTrajectory
 from prompts.system_prompts import get_system_prompt as load_system_prompt
 from tools.tool import Tool
 from utils.resource_manager import ResourceManager
+
+__all__ = [
+    "Environment",
+    "Observation",
+    "TrajectoryStep",
+    "TaskTrajectory",
+]
 
 
 class Environment(ABC):
