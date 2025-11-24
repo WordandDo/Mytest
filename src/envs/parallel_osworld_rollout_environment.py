@@ -24,7 +24,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.enviroment import Environment
 from envs.data_models import Observation
 from tools.tool import Tool
-from utils.resource_manager import HeavyResourceManager, ResourceManager, NoResourceManager, VMPoolResourceManager
+from utils.resource_manager import ResourceManager, NoResourceManager, VMPoolResourceManager
 from utils.instance_tracker import get_instance_tracker
 
 # 引入原 DesktopEnv 依赖的底层组件
@@ -108,7 +108,7 @@ class ParallelOSWorldRolloutEnvironment(Environment):
 
     def __init__(
         self,
-        resource_manager: Optional[HeavyResourceManager] = None,
+        resource_manager: Optional[ResourceManager] = None,
         parallel_degree: int = 1,
         model_name: str = "gpt-4.1-2025-04-14",
         openai_api_key: Optional[str] = None,
