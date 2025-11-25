@@ -38,30 +38,28 @@ logger = logging.getLogger(__name__)
 
 class ResourceStatus(Enum):
     """通用资源状态"""
-    FREE = "free"
-    OCCUPIED = "occupied"
-    INITIALIZING = "initializing"
-    ERROR = "error"
-    STOPPED = "stopped"
+    FREE = "free"                 # 资源空闲，可以被分配
+    OCCUPIED = "occupied"         # 资源已被占用（已分配给 Worker）
+    INITIALIZING = "initializing" # 资源正在初始化或重置中，暂时不可用
+    ERROR = "error"               # 资源发生错误，需人工检查或自动修复
+    STOPPED = "stopped"           # 资源已停止运行或被销毁
 
 
 @dataclass
 class ResourceEntry:
     """通用资源条目基类"""
-    resource_id: str
-    status: ResourceStatus = ResourceStatus.FREE
-    allocated_to: Optional[str] = None
-    allocated_at: Optional[float] = None
-    error_message: Optional[str] = None
-    config: Dict[str, Any] = field(default_factory=dict)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    resource_id: str              # 资源的唯一标识符 (例如: 'vm_1', 'gpu_0')
+    status: ResourceStatus = ResourceStatus.FREE  # 当前资源的生命周期状态
+    allocated_to: Optional[str] = None  # 当前持有该资源的 Worker ID (空闲时为 None)
+    allocated_at: Optional[float] = None  # 资源被分配的时间戳 (用于超时检测或统计)
+    error_message: Optional[str] = None   # 当状态为 ERROR 时，记录具体的错误信息
+    config: Dict[str, Any] = field(default_factory=dict)  # 资源的初始化配置/元数据
+    lock: threading.Lock = field(default_factory=threading.Lock)  # 线程锁，保护该条目的并发读写
 
     def __post_init__(self):
         # 自动转换字符串状态
         if isinstance(self.status, str):
             self.status = ResourceStatus(self.status)
-
-
 class AbstractPoolManager(ABC):
     """
     抽象资源池管理器
