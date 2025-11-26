@@ -1,3 +1,4 @@
+# src/utils/desktop_env/providers/aliyun/manager.py
 import os
 import logging
 import dotenv
@@ -18,6 +19,7 @@ from utils.desktop_env.providers.aliyun.config import ENABLE_TTL, DEFAULT_TTL_MI
 
 dotenv.load_dotenv()
 
+# 检查必要的环境变量
 for env_name in [
     "ALIYUN_REGION",
     "ALIYUN_VSWITCH_ID",
@@ -50,7 +52,7 @@ MAX_ATTEMPTS = 15
 def _can_register_signals() -> bool:
     """
     signal.signal 只能在主解释器的主线程调用。BaseManager 等子进程或线程中
-    调用会直接抛出 ValueError。这里做一次统一判断，避免在那些场景下注册失败。
+    调用会直接抛出 ValueError。这里做一次统一判断。
     """
     return (
         multiprocessing.current_process().name == "MainProcess"
@@ -60,7 +62,7 @@ def _can_register_signals() -> bool:
 
 def _allocate_vm(screen_size=(1920, 1080)):
     """
-    Allocate a new Aliyun ECS instance
+    Allocate a new Aliyun ECS instance (Enhanced Logging Version)
     """
     assert screen_size == (1920, 1080), "Only 1920x1080 screen size is supported"
 
@@ -71,6 +73,8 @@ def _allocate_vm(screen_size=(1920, 1080)):
     )
     client = ECSClient(config)
     instance_id = None
+    
+    # 信号处理逻辑
     signal_handlers_enabled = _can_register_signals()
     original_sigint_handler = None
     original_sigterm_handler = None
@@ -82,9 +86,7 @@ def _allocate_vm(screen_size=(1920, 1080)):
         def signal_handler(sig, frame):
             if instance_id:
                 signal_name = "SIGINT" if sig == signal.SIGINT else "SIGTERM"
-                logger.warning(
-                    f"Received {signal_name} signal, terminating instance {instance_id}..."
-                )
+                logger.warning(f"Received {signal_name}, terminating {instance_id}...")
                 try:
                     delete_request = ecs_models.DeleteInstancesRequest(
                         region_id=ALIYUN_REGION,
@@ -92,57 +94,41 @@ def _allocate_vm(screen_size=(1920, 1080)):
                         force=True,
                     )
                     client.delete_instances(delete_request)
-                    logger.info(
-                        f"Successfully terminated instance {instance_id} after {signal_name}."
-                    )
+                    logger.info(f"Terminated {instance_id} after {signal_name}.")
                 except Exception as cleanup_error:
-                    logger.error(
-                        f"Failed to terminate instance {instance_id} after {signal_name}: {str(cleanup_error)}"
-                    )
+                    logger.error(f"Cleanup failed: {cleanup_error}")
 
-            # Restore original signal handlers
+            # 恢复原有信号处理并退出
             signal.signal(signal.SIGINT, original_sigint_handler)
             signal.signal(signal.SIGTERM, original_sigterm_handler)
 
-            # Raise appropriate exception based on signal type
             if sig == signal.SIGINT:
                 raise KeyboardInterrupt
             else:
-                # For SIGTERM, exit gracefully
                 import sys
-
                 sys.exit(0)
     else:
         signal_handler = None
 
     try:
-        # Set up signal handlers for both SIGINT and SIGTERM (if supported)
+        # 设置信号处理器
         if signal_handlers_enabled and signal_handler:
             signal.signal(signal.SIGINT, signal_handler)
             signal.signal(signal.SIGTERM, signal_handler)
 
-        logger.info(
-            f"Creating new ECS instance in region {ALIYUN_REGION} with image {ALIYUN_IMAGE_ID}"
-        )
+        logger.info(f"Creating ECS in {ALIYUN_REGION}, Image: {ALIYUN_IMAGE_ID}")
 
         # TTL configuration
         ttl_enabled = ENABLE_TTL
         ttl_minutes = DEFAULT_TTL_MINUTES
         ttl_seconds = max(0, int(ttl_minutes) * 60)
-
-        # Aliyun constraints: at least 30 minutes in the future, ISO8601 UTC, seconds must be 00
         now_utc = datetime.now(timezone.utc)
         min_eta = now_utc + timedelta(minutes=30)
         raw_eta = now_utc + timedelta(seconds=ttl_seconds)
         effective_eta = raw_eta if raw_eta > min_eta else min_eta
-        # round up to the next full minute, zero seconds
         effective_eta = (effective_eta + timedelta(seconds=59)).replace(second=0, microsecond=0)
         auto_release_str = effective_eta.strftime('%Y-%m-%dT%H:%M:%SZ')
-        logger.info(
-            f"TTL config: enabled={ttl_enabled}, minutes={ttl_minutes}, seconds={ttl_seconds}, ETA(UTC)={auto_release_str}"
-        )
 
-        # Create instance request (attempt with auto_release_time first when TTL enabled)
         def _build_request(with_ttl: bool) -> ecs_models.RunInstancesRequest:
             kwargs = dict(
                 region_id=ALIYUN_REGION,
@@ -155,41 +141,55 @@ def _allocate_vm(screen_size=(1920, 1080)):
                 internet_max_bandwidth_out=10,
                 internet_charge_type="PayByTraffic",
                 instance_charge_type="PostPaid",
+                # 注意：如果您的实例类型不支持 cloud_essd，请在此处修改为 cloud_efficiency
                 system_disk=ecs_models.RunInstancesRequestSystemDisk(
-                    size="50",
-                    category="cloud_essd",
+                    size="50", category="cloud_essd",
                 ),
                 deletion_protection=False,
             )
-            
             if ALIYUN_RESOURCE_GROUP_ID:
                 kwargs["resource_group_id"] = ALIYUN_RESOURCE_GROUP_ID
-            
             if with_ttl and ttl_enabled and ttl_seconds > 0:
                 kwargs["auto_release_time"] = auto_release_str
             return ecs_models.RunInstancesRequest(**kwargs)
 
+        # 辅助函数：打印阿里云详细错误
+        def log_aliyun_error(e, phase):
+            logger.error(f"[{phase}] Aliyun API Error Details:")
+            logger.error(f"  Exception Type: {type(e).__name__}")
+            logger.error(f"  Message: {str(e)}")
+            # 尝试提取阿里云 SDK 特有的错误字段
+            if hasattr(e, 'code'): logger.error(f"  Code: {e.code}")
+            if hasattr(e, 'message'): logger.error(f"  Msg : {e.message}")
+            if hasattr(e, 'data'): logger.error(f"  Data: {e.data}")
+            if hasattr(e, 'request_id'): logger.error(f"  ReqID: {e.request_id}")
+
         try:
+            # Attempt 1: Try with TTL
             request = _build_request(with_ttl=True)
+            logger.info(f"Sending RunInstances Request (TTL): {request.to_map()}") 
             response = client.run_instances(request)
         except Exception as create_err:
-            # Retry without auto_release_time if creation-time TTL is rejected
-            logger.warning(
-                f"RunInstances with auto_release_time failed: {create_err}. Retrying without TTL field..."
-            )
-            request = _build_request(with_ttl=False)
-            response = client.run_instances(request)
-        instance_ids = response.body.instance_id_sets.instance_id_set
+            log_aliyun_error(create_err, "Attempt 1 (With TTL)") 
+            
+            logger.warning("Retrying without TTL...")
+            try:
+                # Attempt 2: Retry without TTL
+                request = _build_request(with_ttl=False)
+                logger.info(f"Sending RunInstances Request (No TTL): {request.to_map()}") 
+                response = client.run_instances(request)
+            except Exception as retry_err:
+                log_aliyun_error(retry_err, "Attempt 2 (No TTL)") 
+                raise retry_err
 
+        instance_ids = response.body.instance_id_sets.instance_id_set
         if not instance_ids:
-            raise RuntimeError(
-                "Failed to create ECS instance - no instance ID returned"
-            )
+            raise RuntimeError("Aliyun returned empty instance_id_set")
 
         instance_id = instance_ids[0]
         logger.info(f"ECS instance {instance_id} created successfully")
 
-        # 记录实例创建
+        # Record instance creation
         try:
             from utils.instance_tracker import get_instance_tracker
             tracker = get_instance_tracker()
@@ -204,8 +204,7 @@ def _allocate_vm(screen_size=(1920, 1080)):
         # Wait for the instance to be running
         logger.info(f"Waiting for instance {instance_id} to be running...")
         _wait_for_instance_running(client, instance_id)
-
-        logger.info(f"Instance {instance_id} is now running and ready")
+        logger.info(f"Instance {instance_id} is now Running.")
 
     except KeyboardInterrupt:
         logger.warning("VM allocation interrupted by user (SIGINT).")
@@ -219,12 +218,10 @@ def _allocate_vm(screen_size=(1920, 1080)):
                 )
                 client.delete_instances(delete_request)
             except Exception as cleanup_error:
-                logger.error(
-                    f"Failed to cleanup instance {instance_id}: {str(cleanup_error)}"
-                )
+                logger.error(f"Failed to cleanup instance {instance_id}: {str(cleanup_error)}")
         raise
     except Exception as e:
-        logger.error(f"Failed to allocate ECS instance: {str(e)}")
+        logger.error(f"Failed to allocate ECS instance: {str(e)}", exc_info=True)
         if instance_id:
             logger.info(f"Terminating instance {instance_id} due to an error.")
             try:
@@ -235,9 +232,7 @@ def _allocate_vm(screen_size=(1920, 1080)):
                 )
                 client.delete_instances(delete_request)
             except Exception as cleanup_error:
-                logger.error(
-                    f"Failed to cleanup instance {instance_id}: {str(cleanup_error)}"
-                )
+                logger.error(f"Failed to cleanup instance {instance_id}: {str(cleanup_error)}")
         raise
     finally:
         if signal_handlers_enabled and original_sigint_handler and original_sigterm_handler:

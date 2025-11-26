@@ -189,7 +189,11 @@ def _auto_register_builtin_environments():
         register_environment("osworld_parallel", ParallelOSWorldRolloutEnvironment)
     except ImportError:
         pass
-
+    try:
+        from .http_mcp_env import HttpMCPEnv
+        register_environment("http_mcp", HttpMCPEnv)
+    except ImportError:
+        pass
 
 # Auto-register on module import
 _auto_register_builtin_environments()
