@@ -7,7 +7,7 @@ import asyncio
 import time
 import random
 from typing import Dict, Any, Union, Optional, List
-
+from tools.tool import Tool
 # 引入 MCP SDK
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -59,52 +59,87 @@ class HttpMCPEnv(Environment):
 
     def _initialize_tools(self):
         """
-        动态获取 MCP Server 端的工具定义，并转换为 OpenAI Schema 格式。
+        [重构版] 直接从 MCP 元数据生成 Schema 和 Description，
+        跳过 self.tools 的对象注册过程。
         """
         try:
             logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
-            # 同步调用获取工具列表
             mcp_tools = self._list_tools_sync()
             
-            # [过滤] 排除基础设施管理工具，不暴露给 LLM
-            # 这些工具由 allocate_resource/release_resource 内部调用
+            # 1. 过滤黑名单工具
             blacklist = {
                 "setup_environment", 
                 "teardown_environment", 
-                "get_observation", # 通常由框架自动调用，或者视需求保留
+                "get_observation", 
                 "evaluate_task"
             }
-            
             valid_tools = [t for t in mcp_tools if t.name not in blacklist]
             
-            # 转换 Schema
+            # 2. 直接生成 OpenAI Schema (用于 API 调用)
+            # 这一步你原本就有了，保持不变
             self.tool_schemas = [self._convert_mcp_tool_to_openai(t) for t in valid_tools]
             
-            # 注册伪造的 Tool 对象到 self.tools 字典
-            # 这是为了让 execute_tool 在查找时认为工具存在，虽然实际执行会被拦截
-            from tools.tool import Tool
-            for schema in self.tool_schemas:
-                func_name = schema["function"]["name"]
-                desc = schema["function"]["description"]
-                self.tools[func_name] = Tool(name=func_name, description=desc)
+            # 3. [关键修改] 直接生成工具描述文本 (用于 System Prompt)
+            # 基类原本是通过遍历 self.tools 生成的，这里我们直接手动生成
+            descriptions = []
+            for t in valid_tools:
+                # 处理可能为空的描述
+                desc = t.description if t.description else "No description provided."
+                descriptions.append(f"- {t.name}: {desc}")
+            
+            self.tool_descriptions = "\n".join(descriptions)
+            
+            # 4. [关键修改] 不再操作 self.tools
+            # self.tools = {}  # 保持为空即可，因为我们已经覆盖了所有依赖它的下游产物
                 
-            logger.info(f"[{self.worker_id}] Initialized {len(self.tool_schemas)} tools (filtered from {len(mcp_tools)}).")
+            logger.info(f"[{self.worker_id}] Initialized {len(valid_tools)} tools (Metadata only).")
+            
         except Exception as e:
             logger.error(f"Failed to initialize tools: {e}")
-            # 可以在这里抛出异常，或者保留空工具列表(会导致 Agent 无法行动)
             self.tool_schemas = []
-
+            self.tool_descriptions = "Error loading tools."
     def _convert_mcp_tool_to_openai(self, mcp_tool) -> Dict[str, Any]:
         """将 MCP Tool 对象转换为 OpenAI Function Schema"""
+        
+        # 1. 获取原始参数定义
+        parameters = mcp_tool.inputSchema.copy() if hasattr(mcp_tool, "inputSchema") else {}
+        
+        # 2. [新增] 从 properties 中移除 worker_id
+        if "properties" in parameters and "worker_id" in parameters["properties"]:
+            del parameters["properties"]["worker_id"]
+            
+        # 3. [新增] 从 required 中移除 worker_id
+        if "required" in parameters and "worker_id" in parameters["required"]:
+            parameters["required"] = [p for p in parameters["required"] if p != "worker_id"]
+
         return {
             "type": "function",
             "function": {
                 "name": mcp_tool.name,
                 "description": mcp_tool.description,
-                "parameters": mcp_tool.inputSchema 
+                "parameters": parameters 
             }
         }
-
+    def get_tool(self, name: str) -> Optional[Tool]:
+        """
+        [重写] 明确禁止获取本地工具实例
+        """
+        # 检查工具是否在我们的 Schema 列表中（确认它是否存在）
+        tool_exists = any(s["function"]["name"] == name for s in self.tool_schemas)
+        
+        if tool_exists:
+            # 记录警告日志，或者直接抛出错误
+            logger.warning(
+                f"Attempted to access local tool instance '{name}', but this is a remote MCP environment. "
+                f"Use execute_tool('{name}', ...) instead."
+            )
+            return None # 或者 raise NotImplementedError(...)
+            
+        return None
+    # 为了保持一致性，建议重写 list_tools，因为 self.tools 现在是空的
+    def list_tools(self) -> List[str]:
+        """列出当前可用工具名称 (从 Schema 中获取)"""
+        return [s["function"]["name"] for s in self.tool_schemas]
     # =========================================================================
     # 2. 资源调度接口 (Dynamic Scheduling)
     # =========================================================================
@@ -218,9 +253,12 @@ class HttpMCPEnv(Environment):
     async def _call_tool_async(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """异步 MCP 调用实现"""
         # 注入 worker_id 以便 Server 路由
+       
         tool_args = args.copy()
-        if "worker_id" not in tool_args:
-            tool_args["worker_id"] = self.worker_id
+        
+        # [修改] 强制覆盖 worker_id，不信任 LLM 传入的值
+        # 无论 args 里有没有，都必须使用当前环境分配的 self.worker_id
+        tool_args["worker_id"] = self.worker_id 
 
         sse_url = f"{self.server_url}/sse"
         
