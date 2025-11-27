@@ -19,7 +19,7 @@ export MCP_SERVER_URL="http://localhost:${MCP_SERVER_PORT}"
 
 # 3. 任务配置
 DATA_PATH="/home/lb/AgentFlow/src/data/osworld_examples.jsonl"
-NUM_ROLLOUTS=50                       # 并发 Worker 数量 (N值)
+NUM_ROLLOUTS=2                       # 并发 Worker 数量 (N值)
 OUTPUT_DIR="results/parallel_run_$(date +%Y%m%d_%H%M%S)"
 
 # =================================================================

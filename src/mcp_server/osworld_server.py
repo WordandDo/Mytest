@@ -219,8 +219,12 @@ elif ACTION_SPACE == "pyautogui":
 
 
 if __name__ == "__main__":
-    import uvicorn
-    
+    # 直接修改 mcp 实例的 settings 属性
     mcp.settings.debug = True
-    print("🚀 Starting MCP Server on port 8080 (SSE Mode)...")
-    mcp.run(transport='sse', host="0.0.0.0", port=8080)
+    mcp.settings.host = "0.0.0.0"
+    mcp.settings.port = 8080
+    
+    print(f"🚀 Starting MCP Server on {mcp.settings.host}:{mcp.settings.port} (SSE Mode)...")
+    
+    # 直接调用 run，不传 host/port，它会自动读取 settings 中的配置
+    mcp.run(transport='sse')

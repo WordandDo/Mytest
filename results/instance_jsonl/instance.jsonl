@@ -79,3 +79,6 @@
 {"instance_id": "i-2zeilon8lh484jiq95zp", "ip_address": null, "provider": "aliyun", "region": "cn-beijing", "create_time": "2025-11-27T00:35:33.828108", "cleanup_time": null, "current_task_id": null, "task_history": []}
 {"instance_id": "i-2zebt802yucibfl2cich", "ip_address": null, "provider": "aliyun", "region": "cn-beijing", "create_time": "2025-11-27T00:44:18.060153", "cleanup_time": null, "current_task_id": null, "task_history": []}
 {"instance_id": "i-2ze4rlxvrb4swol0ow7p", "ip_address": null, "provider": "aliyun", "region": "cn-beijing", "create_time": "2025-11-27T00:49:56.167948", "cleanup_time": null, "current_task_id": null, "task_history": []}
+{"instance_id": "i-2zehxglpb1fxckw4ent5", "ip_address": null, "provider": "aliyun", "region": "cn-beijing", "create_time": "2025-11-27T11:17:02.423620", "cleanup_time": null, "current_task_id": null, "task_history": []}
+{"instance_id": "i-2zefdulon8whstxsiv5g", "ip_address": null, "provider": "aliyun", "region": "cn-beijing", "create_time": "2025-11-27T11:36:34.943554", "cleanup_time": null, "current_task_id": null, "task_history": []}
+{"instance_id": "i-2ze9flc0ujq8x9qeyehh", "ip_address": null, "provider": "aliyun", "region": "cn-beijing", "create_time": "2025-11-27T11:46:26.491395", "cleanup_time": null, "current_task_id": null, "task_history": []}

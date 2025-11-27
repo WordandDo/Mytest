@@ -65,7 +65,7 @@ class HttpMCPEnv(Environment):
         先检查资源池状态，有空闲再申请；无空闲则休眠。
         """
         logger.info(f"Worker [{self.worker_id}] starting setup...")
-        
+        retry_count = 0
         while True:
             try:
                 # 1. 探路 (Smart Check)
