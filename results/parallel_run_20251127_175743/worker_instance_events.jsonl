@@ -1,0 +1,8 @@
+{"timestamp": "2025-11-27T17:59:22.216234", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "8ba5ae7a-5ae5-4eab-9fcc-5dd4fe3abf89", "action": "allocate"}
+{"timestamp": "2025-11-27T17:59:27.112581", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "8ba5ae7a-5ae5-4eab-9fcc-5dd4fe3abf89", "action": "release"}
+{"timestamp": "2025-11-27T18:00:16.189691", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "8d9fd4e2-6fdb-46b0-b9b9-02f06495c62f", "action": "allocate"}
+{"timestamp": "2025-11-27T18:00:20.830499", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "8d9fd4e2-6fdb-46b0-b9b9-02f06495c62f", "action": "release"}
+{"timestamp": "2025-11-27T18:00:20.847792", "worker_id": "worker-2", "instance_id": null, "task_id": null, "action": "worker_exit"}
+{"timestamp": "2025-11-27T18:01:26.181471", "worker_id": "worker-1", "instance_id": "worker-1", "task_id": "4127319a-8b79-4410-b58a-7a151e15f3d7", "action": "allocate"}
+{"timestamp": "2025-11-27T18:01:31.933756", "worker_id": "worker-1", "instance_id": "worker-1", "task_id": "4127319a-8b79-4410-b58a-7a151e15f3d7", "action": "release"}
+{"timestamp": "2025-11-27T18:01:31.939813", "worker_id": "worker-1", "instance_id": null, "task_id": null, "action": "worker_exit"}
