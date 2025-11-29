@@ -15,7 +15,7 @@ sys.path.append(os.path.join(cwd, "src"))
 
 from mcp.server.fastmcp import FastMCP
 from src.utils.desktop_env.controllers.python import PythonController
-from mcp_server.probe import wait_for_resource_availability
+from mcp_server.core.probe import wait_for_resource_availability
 
 mcp = FastMCP("OSWorld Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")

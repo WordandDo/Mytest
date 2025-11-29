@@ -17,7 +17,8 @@ if os.path.join(cwd, "src") not in sys.path:
 # 导入真正的索引加载器
 from utils.rag_index import get_rag_index_class, BaseRAGIndex
 
-from mcp_server.probe import wait_for_resource_availability
+from mcp_server.core.probe import wait_for_resource_availability
+from mcp_server.core.registry import ToolRegistry
 
 mcp = FastMCP("RAG Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
@@ -28,6 +29,7 @@ RAG_SESSIONS: Dict[str, Dict] = {}
 
 print("🚀 Starting RAG MCP Server")
 
+@ToolRegistry.register_tool("rag_lifecycle")
 @mcp.tool()
 async def setup_rag_engine(worker_id: str) -> str:
     """
@@ -104,6 +106,7 @@ async def setup_rag_engine(worker_id: str) -> str:
         traceback.print_exc()
         return json.dumps({"status": "error", "message": f"Failed to load local index: {str(e)}"})
 
+@ToolRegistry.register_tool("rag_query")
 @mcp.tool()
 async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> str:
     """
@@ -134,6 +137,7 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> st
     except Exception as e:
         return json.dumps({"status": "error", "message": f"Query execution failed: {str(e)}"})
 
+@ToolRegistry.register_tool("rag_lifecycle")
 @mcp.tool()
 async def release_rag_engine(worker_id: str) -> str:
     """释放 RAG 资源并卸载内存中的索引"""

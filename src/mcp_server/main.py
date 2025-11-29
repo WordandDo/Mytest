@@ -12,7 +12,7 @@ if os.path.join(cwd, "src") not in sys.path:
     sys.path.append(os.path.join(cwd, "src"))
 
 from mcp.server.fastmcp import FastMCP
-from mcp_server.registry import ToolRegistry
+from mcp_server.core.registry import ToolRegistry
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -46,6 +46,10 @@ def main():
     mcp = FastMCP(server_name)
     
     logger.info(f"🚀 Initializing {server_name}...")
+
+    # [新增步骤] 自动发现工具
+    # 扫描当前包下的所有文件，触发 @register_tool
+    ToolRegistry.autodiscover("mcp_server") 
 
     # 3. 动态注册工具
     registered_tools_count = 0
