@@ -3,8 +3,7 @@ import sys
 import os
 import json
 import httpx
-import asyncio
-from typing import Optional, List
+from typing import Optional, Dict
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
@@ -12,95 +11,121 @@ from mcp.server.fastmcp import FastMCP
 load_dotenv()
 cwd = os.getcwd()
 sys.path.append(cwd)
+if os.path.join(cwd, "src") not in sys.path:
+    sys.path.append(os.path.join(cwd, "src"))
+
+# 导入真正的索引加载器
+from envs.rag_index import get_rag_index_class, BaseRAGIndex
 
 mcp = FastMCP("RAG Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 
-# 全局会话，存储 RAG 资源信息
-RAG_SESSIONS = {}
+# 全局会话，存储 worker_id -> 索引实例的映射
+# 结构: { worker_id: { "resource_id": str, "index": BaseRAGIndex, "path": str } }
+RAG_SESSIONS: Dict[str, Dict] = {}
 
 print("🚀 Starting RAG MCP Server")
 
 @mcp.tool()
 async def setup_rag_engine(worker_id: str) -> str:
     """
-    初始化 RAG 引擎：向资源管理器申请 RAG 资源。
+    初始化 RAG 引擎：向资源管理器申请 RAG 资源并加载索引到内存。
+    这可能需要几秒钟时间来加载模型和向量数据。
     """
+    print(f"[{worker_id}] Requesting RAG resource...")
     async with httpx.AsyncClient() as client:
         try:
             # 申请 rag 类型的资源
             resp = await client.post(
                 f"{RESOURCE_API_URL}/allocate", 
                 json={"worker_id": worker_id, "type": "rag"}, 
-                timeout=30
+                timeout=60 # 增加超时，防止分配等待过久
             )
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            return json.dumps({"status": "error", "message": f"RAG Alloc failed: {e}"})
+            error_msg = f"RAG Alloc failed: {e}"
+            print(error_msg)
+            return json.dumps({"status": "error", "message": error_msg})
 
     resource_id = data.get("id")
     index_path = data.get("index_path")
+    model_name = data.get("emb_model")
+    use_faiss = data.get("use_faiss", False)
 
-    # 在这里可以真正加载索引或初始化查询对象
-    # 为了演示，我们将配置存入会话
-    RAG_SESSIONS[worker_id] = {
-        "resource_id": resource_id,
-        "index_path": index_path,
-        "status": "active"
-    }
-    
-    return json.dumps({
-        "status": "success",
-        "message": f"RAG Engine ready. Index: {index_path}",
-        "resource_id": resource_id
-    })
+    print(f"[{worker_id}] Allocated {resource_id}. Loading index from {index_path}...")
+
+    try:
+        # 获取对应的索引类并加载
+        IndexClass = get_rag_index_class(use_faiss=use_faiss)
+        
+        # 这里的 device 可以根据部署情况调整，默认为 cpu 以节省显存给主 Agent
+        loaded_index = IndexClass.load_index(
+            index_path=index_path,
+            model_name=model_name,
+            device="cpu" 
+        )
+        
+        RAG_SESSIONS[worker_id] = {
+            "resource_id": resource_id,
+            "index": loaded_index,
+            "index_path": index_path,
+            "status": "active"
+        }
+        
+        msg = f"RAG Engine ready. Loaded {len(loaded_index.chunks)} chunks."
+        print(f"[{worker_id}] {msg}")
+        
+        return json.dumps({
+            "status": "success",
+            "message": msg,
+            "resource_id": resource_id
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return json.dumps({"status": "error", "message": f"Failed to load local index: {str(e)}"})
 
 @mcp.tool()
 async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> str:
     """
-    查询知识库。必须先调用 setup_rag_engine。
+    查询知识库。根据语义相似度检索相关上下文。
+    必须先调用 setup_rag_engine 初始化。
     """
     session = RAG_SESSIONS.get(worker_id)
     if not session:
         return json.dumps({"status": "error", "message": "No active RAG session. Call setup_rag_engine first."})
 
-    index_path = session.get("index_path")
+    rag_index = session.get("index")
+    if not rag_index:
+        return json.dumps({"status": "error", "message": "RAG index not loaded properly."})
     
-    # [模拟检索逻辑]
-    # 实际代码中，这里会调用 LangChain 或 LlamaIndex 的检索接口
-    # 这里我们简单读取文件模拟检索
-    results = []
+    if not query:
+        return json.dumps({"status": "error", "message": "Query cannot be empty"})
+
     try:
-        if os.path.exists(index_path):
-            with open(index_path, 'r', encoding='utf-8') as f:
-                # 简单实现：逐行查找包含查询词的内容
-                lines = f.readlines()
-                for line in lines:
-                    if len(results) >= top_k: break
-                    if query.lower() in line.lower():
-                        results.append(line.strip())
-                
-                # 如果没找到，为了演示返回前几行
-                if not results and lines:
-                    results = [l.strip() for l in lines[:top_k]]
-        else:
-            return json.dumps({"status": "error", "message": f"Index file not found: {index_path}"})
+        # 调用真正的查询接口
+        # query 方法返回的是格式化后的字符串 "### Retrieved Context:\n..."
+        result_text = rag_index.query(query, top_k=top_k)
+        
+        return json.dumps({
+            "status": "success",
+            "results": result_text
+        })
 
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
-
-    return json.dumps({
-        "status": "success",
-        "results": results
-    })
+        return json.dumps({"status": "error", "message": f"Query execution failed: {str(e)}"})
 
 @mcp.tool()
 async def release_rag_engine(worker_id: str) -> str:
-    """释放 RAG 资源"""
+    """释放 RAG 资源并卸载内存中的索引"""
     session = RAG_SESSIONS.get(worker_id)
     if session:
         resource_id = session.get("resource_id")
+        print(f"[{worker_id}] Releasing resource {resource_id}...")
+        
+        # 1. 释放远程资源
         async with httpx.AsyncClient() as client:
             try:
                 await client.post(
@@ -108,13 +133,22 @@ async def release_rag_engine(worker_id: str) -> str:
                     json={"resource_id": resource_id, "worker_id": worker_id}, 
                     timeout=10
                 )
-            except:
-                pass
+            except Exception as e:
+                print(f"Warning: Failed to notify resource manager: {e}")
+        
+        # 2. 清理本地内存
+        # 显式删除索引对象以辅助 GC
+        if "index" in session:
+            del session["index"]
         RAG_SESSIONS.pop(worker_id, None)
+        
+        import gc
+        gc.collect()
+        
     return "Released"
 
 if __name__ == "__main__":
-    # RAG Server 运行在 8081 端口，避免与 OSWorld Server (8080) 冲突
+    # RAG Server 运行在 8081 端口
     mcp.settings.debug = True
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = 8081

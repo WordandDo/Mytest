@@ -1,0 +1,16 @@
+{
+  "server_name": "Hybrid Agent Gateway",
+  "port": 8080,
+  "debug": true,
+  "modules": [
+    {
+      "resource_type": "rag",
+      "tool_groups": ["rag_lifecycle", "rag_query"]
+    },
+    {
+      "resource_type": "vm",
+      "action_space": "computer_13",
+      "tool_groups": ["computer_lifecycle", "desktop_observation", "desktop_action"]
+    }
+  ]
+}
