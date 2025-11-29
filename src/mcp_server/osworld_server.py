@@ -15,6 +15,7 @@ sys.path.append(os.path.join(cwd, "src"))
 
 from mcp.server.fastmcp import FastMCP
 from src.utils.desktop_env.controllers.python import PythonController
+from mcp_server.probe import wait_for_resource_availability
 
 mcp = FastMCP("OSWorld Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
@@ -36,6 +37,22 @@ def _get_controller(worker_id: str) -> PythonController:
 @mcp.tool()
 async def setup_environment(config_name: str, task_id: str, worker_id: str) -> str:
     """初始化环境：申请资源并连接。必须提供 worker_id。"""
+    
+    # 1. 资源探活：在发起申请前，先确认有空闲资源
+    # 避免盲目调用 /allocate 导致死锁或长时间 HTTP 挂起
+    is_available = await wait_for_resource_availability(
+        api_url=RESOURCE_API_URL,
+        resource_type="vm",
+        timeout=30  # 等待 30 秒，如果还没有释放则报错
+    )
+    
+    if not is_available:
+        return json.dumps({
+            "status": "error", 
+            "message": "System busy: No VM resources available. Please try again later."
+        })
+
+    # 2. 正式申请资源 (原有逻辑)
     async with httpx.AsyncClient() as client:
         try:
             # Resource API 的 allocate 是幂等的，可以安全重试

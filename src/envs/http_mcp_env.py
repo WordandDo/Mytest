@@ -25,7 +25,8 @@ class HttpMCPEnv(Environment):
     特性：
     1. 使用标准 MCP 协议 (SSE + JSON-RPC) 与 Server 通信。
     2. 支持动态资源调度 (N-Worker M-VM 模型)，任务开始时申请资源，结束时释放。
-    3. 自动从 Server 发现并注册工具。
+    3. 支持多资源事务性分配 (VM + RAG)，实现全有或无(All-or-Nothing)。
+    4. 自动从 Server 发现并注册工具。
     """
     
     # 开启重型资源模式，通知框架在 run_task 前后调用 allocate/release
@@ -37,6 +38,9 @@ class HttpMCPEnv(Environment):
         self.resource_api_url = kwargs.get("resource_api_url", "http://localhost:8000")
         self.config_name = "default"
         
+        # [新增] RAG 启用开关，默认为 False，可通过 env_kwargs 传入 True
+        self.enable_rag = kwargs.get("enable_rag", False)
+        
         # 2. 获取 worker_id (必需，作为会话标识)
         if "worker_id" in kwargs:
             self.worker_id = kwargs["worker_id"]
@@ -44,7 +48,7 @@ class HttpMCPEnv(Environment):
             import multiprocessing
             self.worker_id = multiprocessing.current_process().name
             
-        logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url} (SSE Mode)")
+        logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url} (SSE Mode). RAG Enabled: {self.enable_rag}")
         
         # 3. 调用父类初始化 (会触发 _initialize_tools)
         super().__init__(**kwargs)
@@ -66,12 +70,17 @@ class HttpMCPEnv(Environment):
             logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
             mcp_tools = self._list_tools_sync()
             
-            # 1. 过滤黑名单工具
+            # 1. 过滤黑名单工具 (基础设施工具不暴露给 Agent)
             blacklist = {
+                # VM 生命周期
                 "setup_environment", 
                 "teardown_environment", 
+                # 辅助工具
                 "get_observation", 
-                "evaluate_task"
+                "evaluate_task",
+                # [新增] RAG 生命周期 (由环境自动管理，Agent 无需关心)
+                "setup_rag_engine",
+                "release_rag_engine"
             }
             valid_tools = [t for t in mcp_tools if t.name not in blacklist]
             
@@ -153,70 +162,131 @@ class HttpMCPEnv(Environment):
 
     def allocate_resource(self, worker_id: str) -> bool:
         """
-        任务开始前调用：申请资源 (VM)
-        实现循环等待逻辑，处理资源池满的情况。
+        [核心修改] 事务性资源分配：
+        1. 申请 VM
+        2. 如果需要 RAG，申请 RAG
+        3. 如果任一步骤失败，回滚已申请资源并重试
         """
-        logger.info(f"Worker [{worker_id}] acquiring VM for new task...")
+        required_resources = ["VM"]
+        if self.enable_rag:
+            required_resources.append("RAG")
+            
+        logger.info(f"Worker [{worker_id}] requesting resources: {required_resources}...")
+        
         retry_interval = 5
-        max_retries = 100 # 防止死循环，可根据 timeout 设置
+        max_retries = 100 
         
         for attempt in range(max_retries):
+            vm_allocated = False
+            rag_allocated = False
+            
             try:
-                # 调用 MCP 的 setup_environment
-                # 注意：Server 端需透传调用 Resource API
-                res = self._call_tool_sync("setup_environment", {
+                # --- Step 1: 申请 VM (基础资源) ---
+                res_vm = self._call_tool_sync("setup_environment", {
                     "config_name": self.config_name,
                     "task_id": "dynamic_alloc",
                     "worker_id": worker_id 
                 })
                 
-                # 检查结果
-                # 如果返回的是 JSON 字符串，先解析
-                if isinstance(res, str):
-                    try: res_json = json.loads(res)
-                    except: res_json = {"raw": res}
-                else:
-                    res_json = res if isinstance(res, dict) else {}
-
-                if res_json.get("status") == "success":
-                    logger.info(f"Worker [{worker_id}] acquired VM successfully.")
-                    return True
-                
-                # 检查是否资源忙
-                msg = res_json.get("message", "")
-                if "No resources" in msg or "exhausted" in msg or "503" in msg:
-                    if attempt % 2 == 0: # 减少日志频率
-                        logger.info(f"Pool full, Worker [{worker_id}] waiting...")
+                vm_status = self._parse_mcp_response(res_vm)
+                if vm_status.get("status") != "success":
+                    # VM 申请失败，记录日志并等待
+                    self._log_alloc_failure(worker_id, "VM", vm_status, attempt)
                     time.sleep(retry_interval)
                     continue
                 
-                # 其他错误 (如网络错误)
-                logger.error(f"Allocation error: {res}")
-                time.sleep(retry_interval)
-                
+                vm_allocated = True
+                logger.info(f"Worker [{worker_id}] ✅ VM acquired.")
+
+                # --- Step 2: 申请 RAG (可选资源) ---
+                if self.enable_rag:
+                    res_rag = self._call_tool_sync("setup_rag_engine", {
+                        "worker_id": worker_id
+                    })
+                    
+                    rag_status = self._parse_mcp_response(res_rag)
+                    if rag_status.get("status") != "success":
+                        # !!! RAG 申请失败，触发回滚 !!!
+                        logger.warning(f"Worker [{worker_id}] ❌ RAG alloc failed ({rag_status.get('message')}). Rolling back VM...")
+                        
+                        # 回滚：释放刚刚申请到的 VM
+                        self._call_tool_sync("teardown_environment", {"worker_id": worker_id})
+                        vm_allocated = False
+                        
+                        # 等待重试
+                        time.sleep(retry_interval)
+                        continue
+                        
+                    rag_allocated = True
+                    logger.info(f"Worker [{worker_id}] ✅ RAG acquired.")
+
+                # --- 全部成功 ---
+                return True
+
             except Exception as e:
-                logger.error(f"Allocation exception: {e}")
+                logger.error(f"Allocation critical exception: {e}")
+                # 发生异常时的防御性清理
+                if vm_allocated:
+                    try: self._call_tool_sync("teardown_environment", {"worker_id": worker_id})
+                    except: pass
+                if rag_allocated:
+                    try: self._call_tool_sync("release_rag_engine", {"worker_id": worker_id})
+                    except: pass
                 time.sleep(retry_interval)
         
-        logger.error(f"Worker [{worker_id}] failed to acquire resource after retries.")
+        logger.error(f"Worker [{worker_id}] failed to acquire all resources after {max_retries} attempts.")
         return False
 
     def release_resource(self, worker_id: str, reset: bool = True) -> None:
         """
-        任务结束后调用：释放资源
+        任务结束后调用：释放所有资源
         """
-        logger.info(f"Worker [{worker_id}] releasing VM...")
+        logger.info(f"Worker [{worker_id}] releasing resources...")
+        
+        # 1. 释放 RAG (如果启用了)
+        if self.enable_rag:
+            try:
+                self._call_tool_sync("release_rag_engine", {"worker_id": worker_id})
+            except Exception as e:
+                logger.warning(f"RAG Release failed: {e}")
+
+        # 2. 释放 VM
         try:
             self._call_tool_sync("teardown_environment", {"worker_id": worker_id})
         except Exception as e:
-            logger.warning(f"Release failed: {e}")
+            logger.warning(f"VM Release failed: {e}")
 
     def get_allocated_resource_id(self) -> str:
         """返回当前分配的资源ID (用于日志)"""
         return self.worker_id 
 
     # =========================================================================
-    # 3. 工具执行与同步桥接
+    # 3. 辅助方法
+    # =========================================================================
+
+    def _parse_mcp_response(self, res: Any) -> Dict[str, Any]:
+        """解析 MCP 返回的 JSON 结果"""
+        if isinstance(res, str):
+            try: 
+                return json.loads(res)
+            except: 
+                return {"status": "error", "message": res}
+        return res if isinstance(res, dict) else {}
+
+    def _log_alloc_failure(self, worker_id, res_type, status, attempt):
+        """记录分配失败日志"""
+        msg = status.get("message", "")
+        # 如果是资源不足，且不是第一次尝试，降低日志级别以减少刷屏
+        if ("No resources" in msg or "exhausted" in msg or "busy" in msg) and attempt % 5 != 0:
+            return
+        
+        if "No resources" in msg or "exhausted" in msg or "busy" in msg:
+             logger.info(f"Pool full ({res_type}), Worker [{worker_id}] waiting...")
+        else:
+             logger.warning(f"Worker [{worker_id}] {res_type} alloc error: {msg}")
+
+    # =========================================================================
+    # 4. 工具执行与同步桥接
     # =========================================================================
 
     def execute_tool(self, tool_name: str, params: Union[str, dict], **kwargs) -> Any:

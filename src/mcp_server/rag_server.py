@@ -15,7 +15,9 @@ if os.path.join(cwd, "src") not in sys.path:
     sys.path.append(os.path.join(cwd, "src"))
 
 # 导入真正的索引加载器
-from envs.rag_index import get_rag_index_class, BaseRAGIndex
+from utils.rag_index import get_rag_index_class, BaseRAGIndex
+
+from mcp_server.probe import wait_for_resource_availability
 
 mcp = FastMCP("RAG Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
@@ -32,14 +34,29 @@ async def setup_rag_engine(worker_id: str) -> str:
     初始化 RAG 引擎：向资源管理器申请 RAG 资源并加载索引到内存。
     这可能需要几秒钟时间来加载模型和向量数据。
     """
+    
+    # 1. 资源探活
+    print(f"[{worker_id}] Probing RAG availability...")
+    is_available = await wait_for_resource_availability(
+        api_url=RESOURCE_API_URL,
+        resource_type="rag",
+        timeout=60 # RAG 释放可能较快，多给点等待时间
+    )
+    
+    if not is_available:
+        return json.dumps({
+            "status": "error", 
+            "message": "System busy: No RAG slots available."
+        })
+
     print(f"[{worker_id}] Requesting RAG resource...")
     async with httpx.AsyncClient() as client:
         try:
-            # 申请 rag 类型的资源
+            # 2. 申请资源 (type="rag")
             resp = await client.post(
                 f"{RESOURCE_API_URL}/allocate", 
                 json={"worker_id": worker_id, "type": "rag"}, 
-                timeout=60 # 增加超时，防止分配等待过久
+                timeout=60
             )
             resp.raise_for_status()
             data = resp.json()

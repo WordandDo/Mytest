@@ -12,7 +12,7 @@ if os.path.join(cwd, "src") not in sys.path:
 
 from utils.resource_pools.base import AbstractPoolManager, ResourceEntry, ResourceStatus
 # 直接导入底层索引实现，不再依赖 RAGEnvironment
-from envs.rag_index import get_rag_index_class, RAGIndexLocal_faiss, BaseRAGIndex
+from utils.rag_index import get_rag_index_class, BaseRAGIndex, RAGIndexLocal_faiss
 
 logger = logging.getLogger(__name__)
 
