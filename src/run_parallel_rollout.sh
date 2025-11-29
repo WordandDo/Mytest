@@ -7,7 +7,8 @@
 # 1. 资源池配置
 export NUM_VMS=1                    # 启动 10 台虚拟机 (M值)
 export PROVIDER_NAME="aliyun"         # 云厂商: aliyun, aws, 或 docker
-
+export rag_pool_size=5              # RAG 资源池大小
+export rag_worker_size=5            # RAG Worker 数量
 # 2. 服务地址配置
 export RESOURCE_API_HOST="0.0.0.0"
 export RESOURCE_API_PORT=8000
