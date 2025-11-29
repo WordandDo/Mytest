@@ -1,7 +1,7 @@
 # src/services/resource_api.py
 import sys
 import os
-import asyncio  # [新增]
+import asyncio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -18,17 +18,16 @@ from services.simple_manager import SimplifiedResourceManager
 load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s' # [优化日志格式]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("ResourceAPI")
 
 app = FastAPI()
 manager: Optional[SimplifiedResourceManager] = None
 
-# ... (load_config 函数保持不变) ...
 def load_config() -> Dict[str, Any]:
-    # ... (保持原样)
     return {
+        # VM 配置
         "provider_name": os.environ.get("PROVIDER_NAME", "aliyun"),
         "num_vms": int(os.environ.get("NUM_VMS", 2)),
         "region": os.environ.get("ALIYUN_REGION", "cn-hangzhou"),
@@ -37,50 +36,49 @@ def load_config() -> Dict[str, Any]:
         "action_space": "computer_13",
         "screen_size": (1920, 1080),
         "headless": True,
+        # RAG 配置 [新增]
+        "num_rag_workers": int(os.environ.get("NUM_RAG_WORKERS", 2)),
+        "rag_index_path": os.environ.get("RAG_INDEX_PATH", "src/data/rag_demo.jsonl")
     }
 
-# [新增] 后台监控协程
 async def monitor_resource_usage():
     logger.info("Starting resource usage monitor (interval=30s)...")
     while True:
         try:
-            if manager and manager.pool:
+            if manager:
                 stats = manager.get_status()
-                # 打印清晰的统计条
-                logger.info(
-                    f"📊 [Monitor] Total: {stats.get('total', 0)} | "
-                    f"Free: {stats.get('free', 0)} | "
-                    f"Occupied: {stats.get('occupied', 0)} | "
-                    f"Error: {stats.get('error', 0)} | "
-                    f"Allocations: {stats.get('allocations', 0)}"
-                )
+                # [修改] 打印 VM 和 RAG 的状态
+                log_msg = "📊 [Monitor] "
+                if "vm" in stats:
+                    s = stats["vm"]
+                    log_msg += f"VM(Free:{s.get('free')}/{s.get('total')}) "
+                if "rag" in stats:
+                    s = stats["rag"]
+                    log_msg += f"RAG(Free:{s.get('free')}/{s.get('total')})"
+                logger.info(log_msg)
         except Exception as e:
             logger.error(f"Monitor error: {e}")
         await asyncio.sleep(30)
 
 @app.on_event("startup")
-async def startup_event(): # [修改] 改为 async
+async def startup_event():
     global manager
     config = load_config()
     manager = SimplifiedResourceManager(config)
     
-    # 启动时初始化（这里使用 run_in_executor 避免阻塞事件循环）
     loop = asyncio.get_running_loop()
     success = await loop.run_in_executor(None, manager.initialize)
     
     if not success:
-        logger.error("Failed to start Resource Manager!")
-        # sys.exit(1) 
+        logger.error("Failed to start Resource Manager (some pools may be offline)!")
     
-    # [新增] 启动监控任务
     asyncio.create_task(monitor_resource_usage())
 
-# ... (其余 API 接口 AllocReq, ReleaseReq, allocate_resource, release_resource, get_status 保持不变) ...
-# 请确保保留原有的代码逻辑
-
+# [修改] 请求模型增加 resource_type
 class AllocReq(BaseModel):
     worker_id: str
     timeout: float = 60.0
+    type: str = "vm"  # 默认为 vm，兼容旧代码
 
 class ReleaseReq(BaseModel):
     resource_id: str
@@ -89,12 +87,13 @@ class ReleaseReq(BaseModel):
 @app.post("/allocate")
 def allocate_resource(req: AllocReq):
     try:
-        res = manager.allocate(req.worker_id, req.timeout)
+        # 传递 type 参数
+        res = manager.allocate(req.worker_id, req.timeout, resource_type=req.type)
         return res
     except Exception as e:
         logger.error(f"Allocation failed: {e}")
-        if "No resources available" in str(e):
-             raise HTTPException(status_code=503, detail="Resource pool exhausted")
+        if "No resources available" in str(e) or "Pool for type" in str(e):
+             raise HTTPException(status_code=503, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/release")
