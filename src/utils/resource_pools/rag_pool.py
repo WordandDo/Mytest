@@ -3,7 +3,8 @@ import logging
 import os
 import sys
 import traceback
-from typing import Dict, Any, Type
+import uuid
+from typing import Dict, Any, Type, Optional
 
 # 确保可以导入 envs 模块
 cwd = os.getcwd()
@@ -41,10 +42,8 @@ class RAGPoolImpl(AbstractPoolManager):
         self.use_faiss = use_faiss
         self.kwargs = kwargs
         
-        # 存储加载后的索引实例（可选，如果仅作路径分发可不存，但为了验证索引完整性建议加载一次）
-        self.rag_index_instance = None
-        
-        # === 初始化生命周期管理 ===
+        # 强制在 Pool 初始化时预加载索引
+        self.rag_index_instance: Optional[BaseRAGIndex] = None
         self._initialize_rag_index()
 
     def _initialize_rag_index(self):
@@ -117,36 +116,23 @@ class RAGPoolImpl(AbstractPoolManager):
 
     def _create_resource(self, index: int) -> ResourceEntry:
         """创建一个 RAG Worker 槽位"""
-        resource_id = f"rag-worker-{index}"
-        
-        # 配置信息传递给申请者
-        config = {
-            "index_path": self.index_path,
-            "kb_path": self.kb_path,
-            "emb_model": self.model_name,
-            "device": self.device,
-            "use_faiss": self.use_faiss
-        }
-        
+        # 生成访问令牌
         return ResourceEntry(
-            resource_id=resource_id,
+            resource_id=f"rag-token-{index}",
             status=ResourceStatus.FREE,
-            config=config
+            config={"token": str(uuid.uuid4()), "mode": "service"}
         )
 
     def _validate_resource(self, entry: ResourceEntry) -> bool:
-        """验证索引目录是否存在"""
-        return os.path.exists(self.index_path)
+        """验证索引是否已正确加载"""
+        return self.rag_index_instance is not None
 
     def _get_connection_info(self, entry: ResourceEntry) -> Dict[str, Any]:
         """返回给 Worker 的连接/配置信息"""
         return {
             "id": entry.resource_id,
-            "type": "rag",
-            "index_path": entry.config["index_path"],
-            "kb_path": entry.config["kb_path"],
-            "emb_model": entry.config["emb_model"],
-            "use_faiss": entry.config["use_faiss"], # 传递是否使用 Faiss 的信息
+            "type": "rag_service",
+            "token": entry.config["token"],
             "status": "ready"
         }
 

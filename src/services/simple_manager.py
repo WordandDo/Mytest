@@ -29,7 +29,7 @@ class SimplifiedResourceManager:
 
             # 2. 初始化 RAG 池 [新增]
             logger.info("--> Init RAG Pool")
-            # 提取 RAG 相关配置，如果有专门的前缀处理更好，这里假设 config 中包含了所需字段
+            # RAG Pool 初始化将触发索引加载
             self.rag_pool = RAGPoolImpl(**self.config)
             rag_success = self.rag_pool.initialize_pool(max_workers=5)
             
@@ -119,3 +119,8 @@ class SimplifiedResourceManager:
         if self.rag_pool:
             status["rag"] = self.rag_pool.get_stats()
         return status
+    
+    def query_rag(self, resource_id: str, worker_id: str, query: str, top_k: int = 3) -> str:
+        if not self.rag_pool:
+            raise RuntimeError("RAG Pool not initialized")
+        return self.rag_pool.process_query(resource_id, worker_id, query, top_k)

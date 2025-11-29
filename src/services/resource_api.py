@@ -36,9 +36,11 @@ def load_config() -> Dict[str, Any]:
         "action_space": "computer_13",
         "screen_size": (1920, 1080),
         "headless": True,
-        # RAG 配置 [新增]
+        # RAG 配置
         "num_rag_workers": int(os.environ.get("NUM_RAG_WORKERS", 2)),
-        "rag_index_path": os.environ.get("RAG_INDEX_PATH", "src/data/rag_demo.jsonl")
+        "rag_index_path": os.environ.get("RAG_INDEX_PATH", "src/data/rag_index_storage"),
+        "rag_kb_path": os.environ.get("RAG_KB_PATH", "src/data/rag_demo.jsonl"),
+        "embedding_device": "cpu"
     }
 
 async def monitor_resource_usage():
@@ -84,6 +86,12 @@ class ReleaseReq(BaseModel):
     resource_id: str
     worker_id: str
 
+class RAGQueryReq(BaseModel):
+    resource_id: str
+    worker_id: str
+    query: str
+    top_k: int = 3
+
 @app.post("/allocate")
 def allocate_resource(req: AllocReq):
     try:
@@ -100,6 +108,17 @@ def allocate_resource(req: AllocReq):
 def release_resource(req: ReleaseReq, background_tasks: BackgroundTasks):
     background_tasks.add_task(manager.release, req.resource_id, req.worker_id)
     return {"status": "releasing"}
+
+@app.post("/query_rag")
+def query_rag_service(req: RAGQueryReq):
+    try:
+        result_text = manager.query_rag(req.resource_id, req.worker_id, req.query, req.top_k)
+        return {"status": "success", "results": result_text}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"RAG Query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/status")
 def get_status():
