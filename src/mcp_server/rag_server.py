@@ -23,8 +23,10 @@ print("🚀 Starting RAG MCP Server (Client Mode)")
 
 @ToolRegistry.register_tool("rag_lifecycle")
 @mcp.tool()
-async def setup_rag_engine(worker_id: str) -> str:
-    """申请 RAG 服务访问令牌"""
+async def setup_rag_session(worker_id: str) -> str:
+    """初始化 RAG 会话：申请访问 Token。
+    (原名 setup_rag_engine)
+    """
     is_available = await wait_for_resource_availability(
         RESOURCE_API_URL, "rag", timeout=60
     )
@@ -84,8 +86,8 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> st
 
 @ToolRegistry.register_tool("rag_lifecycle")
 @mcp.tool()
-async def release_rag_engine(worker_id: str) -> str:
-    """释放 RAG 资源"""
+async def release_rag_session(worker_id: str) -> str:
+    """释放 RAG 资源会话"""
     session = RAG_SESSIONS.pop(worker_id, None)
     if session:
         async with httpx.AsyncClient() as client:
@@ -99,10 +101,4 @@ async def release_rag_engine(worker_id: str) -> str:
     return "Released"
 
 if __name__ == "__main__":
-    # RAG Server 运行在 8081 端口
-    mcp.settings.debug = True
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = 8081
-    
-    print(f"🚀 Starting RAG MCP Server on {mcp.settings.host}:{mcp.settings.port} (SSE Mode)...")
-    mcp.run(transport='sse')
+    mcp.run()

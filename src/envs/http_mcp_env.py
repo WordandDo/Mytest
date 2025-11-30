@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 # 这使得 Client 端可以根据配置动态调用正确的生命周期工具
 RESOURCE_LIFECYCLE_MAP = {
     "vm": {
-        "alloc": "setup_environment",
+        "alloc": "setup_vm_session",
         "release": "teardown_environment",
         "alloc_args": ["config_name", "task_id"] # 除去 worker_id 外需要的参数
     },
     "rag": {
-        "alloc": "setup_rag_engine",
-        "release": "release_rag_engine",
+        "alloc": "setup_rag_session",
+        "release": "release_rag_session",
         "alloc_args": []
     }
 }

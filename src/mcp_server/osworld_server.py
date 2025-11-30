@@ -39,8 +39,10 @@ def _get_controller(worker_id: str) -> PythonController:
 
 @ToolRegistry.register_tool("computer_lifecycle")  # [新增注册]
 @mcp.tool()
-async def setup_environment(config_name: str, task_id: str, worker_id: str) -> str:
-    """初始化环境：申请资源并连接。必须提供 worker_id。"""
+async def setup_vm_session(config_name: str, task_id: str, worker_id: str) -> str:
+    """初始化 VM 会话：申请 VM 资源并初始化控制器。
+    (原名 setup_environment，已重命名以消除歧义)
+    """
     
     # 1. 资源探活：在发起申请前，先确认有空闲资源
     # 避免盲目调用 /allocate 导致死锁或长时间 HTTP 挂起
