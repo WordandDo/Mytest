@@ -51,7 +51,7 @@ class VMPoolImpl(AbstractPoolManager):
         self.path_to_vm_template = path_to_vm
         self.snapshot_name = snapshot_name
         self.action_space = action_space
-        self.screen_size = screen_size
+        self.screen_size = tuple(screen_size) if screen_size else (1920, 1080)
         self.headless = headless
         self.require_a11y_tree = require_a11y_tree
         self.require_terminal = require_terminal

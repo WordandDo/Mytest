@@ -7,7 +7,6 @@ import httpx
 import asyncio
 from typing import Optional, List
 from dotenv import load_dotenv
-import fastmcp
 load_dotenv()
 cwd = os.getcwd()
 sys.path.append(cwd)

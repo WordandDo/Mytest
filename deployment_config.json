@@ -10,15 +10,30 @@
       "config": {
         "num_vms": 5,
         "provider_name": "aliyun",
-        "region": "cn-hangzhou",
+        
+        "// [修改 1] 将地区改为读取环境变量 ALIYUN_REGION (您的 .env 中是 cn-beijing)": "",
+        "region": "${ALIYUN_REGION}",
+        
         "os_type": "Ubuntu",
         "snapshot_name": "init_state",
         "action_space": "computer_13",
         "screen_size": [1920, 1080],
         "headless": true,
-        "client_password": "${VM_PASSWORD}",
-        "access_key": "${ALIYUN_ACCESS_KEY}",
-        "secret_key": "${ALIYUN_SECRET_KEY}"
+        
+        "// [修改 2] 对应 .env 中的 CLIENT_PASSWORD": "",
+        "client_password": "${CLIENT_PASSWORD}",
+        
+        "// [修改 3] 对应 .env 中的 ALIYUN_ACCESS_KEY_ID": "",
+        "access_key": "${ALIYUN_ACCESS_KEY_ID}",
+        
+        "// [修改 4] 对应 .env 中的 ALIYUN_ACCESS_KEY_SECRET": "",
+        "secret_key": "${ALIYUN_ACCESS_KEY_SECRET}",
+
+        "// [可选] 如果您的代码支持通过 kwargs 传递这些参数，可以添加：": "",
+        "image_id": "${ALIYUN_IMAGE_ID}",
+        "instance_type": "${ALIYUN_INSTANCE_TYPE}",
+        "vswitch_id": "${ALIYUN_VSWITCH_ID}",
+        "security_group_id": "${ALIYUN_SECURITY_GROUP_ID}"
       }
     },
     "rag": {
@@ -26,11 +41,12 @@
       "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
       "config": {
         "num_rag_workers": 2,
-        "rag_kb_path": "src/data/rag_demo.jsonl",
-        "rag_index_path": "src/data/rag_index_storage",
+        "rag_kb_path": "",
+        "rag_index_path": "/home/a1/sdb/wikidata4rag/rag_index_20230401-10samples",
         "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
         "use_faiss": true,
-        "embedding_device": "cpu",
+        "embedding_device": "cuda",
+        "use_gpu_index": true,
         "default_top_k": 5
       }
     },

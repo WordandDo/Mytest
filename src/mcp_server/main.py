@@ -82,7 +82,8 @@ def main():
     debug = config.get("debug", False)
 
     logger.info(f"Starting SSE server on {host}:{port}")
-    
+    mcp.settings.host = host
+    mcp.settings.port = port
     # 使用 SSE 传输模式 (与 Claude Desktop 等客户端兼容性最好)
     mcp.run(transport='sse')
 

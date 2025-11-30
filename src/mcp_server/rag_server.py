@@ -3,6 +3,12 @@ import sys
 import os
 import json
 import httpx
+
+# 动态添加 src 路径，确保能找到 mcp_server 模块
+cwd = os.getcwd()
+if os.path.join(cwd, "src") not in sys.path:
+    sys.path.append(os.path.join(cwd, "src"))
+
 from typing import Optional, Dict
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP

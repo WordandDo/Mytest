@@ -17,13 +17,18 @@ _file_lock = threading.Lock()
 class InstanceTracker:
     """实例跟踪器，用于记录实例的创建和清理信息"""
     
-    def __init__(self, output_file: str = "/home/lb/AgentFlow/results/instance_jsonl/instance.jsonl"):
+    def __init__(self, output_file: str = None):
         """
         初始化实例跟踪器
         
         Args:
             output_file: 输出文件路径，每行一个JSON对象
         """
+        if output_file is None:
+            # 获取当前工作目录
+            cwd = os.getcwd()
+            output_file = os.path.join(cwd, "results/instance_jsonl/instance.jsonl")
+        
         self.output_file = output_file
         # 确保目录存在
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
