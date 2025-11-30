@@ -9,12 +9,13 @@ from typing import Dict, Any, Union, Optional, List, Tuple
 from tools.tool import Tool
 
 # 引入 MCP SDK
-from mcp import ClientSession
-from mcp.client.sse import sse_client
 from mcp.types import CallToolResult
 
 # 引入基类
 from envs.enviroment import Environment
+
+# 引入新的 MCP SSE 客户端
+from utils.mcp_sse_client import MCPSSEClient
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,10 @@ class HttpMCPEnv(Environment):
             import multiprocessing
             self.worker_id = multiprocessing.current_process().name
 
-        # 3. 加载 Gateway 配置 (模拟 src/mcp_server/main.py 的加载逻辑)
+        # 3. 实例化 MCP 客户端
+        self.mcp_client = MCPSSEClient(f"{self.server_url}/sse")
+
+        # 4. 加载 Gateway 配置 (模拟 src/mcp_server/main.py 的加载逻辑)
         # 优先使用 kwargs 中的配置路径，否则尝试默认路径
         config_path = kwargs.get("gateway_config_path", "gateway_config.json")
         self.modules_config = self._load_gateway_config(config_path)
@@ -74,7 +78,7 @@ class HttpMCPEnv(Environment):
         logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url}")
         logger.info(f"Active Resources from Config: {self.active_resources}")
         
-        # 4. 调用父类初始化 (会触发 _initialize_tools)
+        # 5. 调用父类初始化 (会触发 _initialize_tools)
         super().__init__(**kwargs)
 
     @property
@@ -172,6 +176,8 @@ class HttpMCPEnv(Environment):
 
     def env_start(self):
         logger.info(f"Worker [{self.worker_id}] started (Config-Driven Mode)")
+        # 建立长连接
+        self._run_sync(self.mcp_client.connect())
 
     def allocate_resource(self, worker_id: str) -> bool:
         """
@@ -262,7 +268,7 @@ class HttpMCPEnv(Environment):
         return self.worker_id 
 
     # =========================================================================
-    # 3. 辅助方法与底层通信 (保持不变)
+    # 3. 辅助方法与底层通信 (重构)
     # =========================================================================
 
     def _parse_mcp_response(self, res: Any) -> Dict[str, Any]:
@@ -294,50 +300,28 @@ class HttpMCPEnv(Environment):
             logger.error(f"Execute tool {tool_name} error: {e}")
             return json.dumps({"status": "error", "message": str(e)})
 
-    def _call_tool_sync(self, tool_name: str, args: Dict[str, Any]) -> Any:
+    def _run_sync(self, coro):
+        """统一的异步转同步辅助函数"""
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self._call_tool_async(tool_name, args))
+        return loop.run_until_complete(coro)
 
-    async def _call_tool_async(self, tool_name: str, args: Dict[str, Any]) -> Any:
+    def _call_tool_sync(self, tool_name: str, args: Dict[str, Any]) -> Any:
+        return self._run_sync(self._call_tool_wrapper(tool_name, args))
+
+    async def _call_tool_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Any:
         tool_args = args.copy()
-        tool_args["worker_id"] = self.worker_id 
-        sse_url = f"{self.server_url}/sse"
-        
-        try:
-            async with sse_client(sse_url) as streams:
-                async with ClientSession(streams[0], streams[1]) as session:
-                    await session.initialize()
-                    result: CallToolResult = await session.call_tool(tool_name, tool_args)
-                    if result.content and len(result.content) > 0:
-                        text_content = result.content[0]
-                        if hasattr(text_content, "text"):
-                            try: return json.loads(text_content.text)
-                            except: return text_content.text
-                        return str(text_content)
-                    return {}
-        except Exception as e:
-            logger.error(f"MCP Async Call '{tool_name}' failed: {e}")
-            raise e
+        tool_args["worker_id"] = self.worker_id
+        return await self.mcp_client.call_tool(tool_name, tool_args)
 
     def _list_tools_sync(self):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self._list_tools_async())
+        return self._run_sync(self._list_tools_wrapper())
 
-    async def _list_tools_async(self):
-        sse_url = f"{self.server_url}/sse"
-        async with sse_client(sse_url) as streams:
-            async with ClientSession(streams[0], streams[1]) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                return result.tools
+    async def _list_tools_wrapper(self):
+        return await self.mcp_client.list_tools()
 
     def env_close(self):
         self.release_resource(self.worker_id)
