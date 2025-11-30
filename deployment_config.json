@@ -1,0 +1,47 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "resources": {
+    "vm": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.vm_pool.VMPoolImpl",
+      "config": {
+        "num_vms": 5,
+        "provider_name": "aliyun",
+        "region": "cn-hangzhou",
+        "os_type": "Ubuntu",
+        "snapshot_name": "init_state",
+        "action_space": "computer_13",
+        "screen_size": [1920, 1080],
+        "headless": true,
+        "client_password": "${VM_PASSWORD}",
+        "access_key": "${ALIYUN_ACCESS_KEY}",
+        "secret_key": "${ALIYUN_SECRET_KEY}"
+      }
+    },
+    "rag": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 2,
+        "rag_kb_path": "src/data/rag_demo.jsonl",
+        "rag_index_path": "src/data/rag_index_storage",
+        "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "use_faiss": true,
+        "embedding_device": "cpu",
+        "default_top_k": 5
+      }
+    },
+    "web_search": {
+      "enabled": false,
+      "implementation_class": "utils.resource_pools.web_search_pool.WebSearchPoolImpl",
+      "config": {
+        "provider": "google",
+        "api_key": "${GOOGLE_API_KEY}",
+        "max_concurrency": 10
+      }
+    }
+  }
+}

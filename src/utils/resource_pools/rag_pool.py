@@ -32,6 +32,7 @@ class RAGPoolImpl(AbstractPoolManager):
                  rag_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
                  use_faiss: bool = False,
                  embedding_device: str = "cpu",
+                 default_top_k: int = 3,  # [新增] 接收配置中的默认值
                  **kwargs):
         super().__init__(num_items=num_rag_workers)
         
@@ -40,6 +41,7 @@ class RAGPoolImpl(AbstractPoolManager):
         self.model_name = rag_model_name
         self.device = embedding_device
         self.use_faiss = use_faiss
+        self.default_top_k = default_top_k  # [新增] 保存默认配置
         self.kwargs = kwargs
         
         # 强制在 Pool 初始化时预加载索引
@@ -141,3 +143,26 @@ class RAGPoolImpl(AbstractPoolManager):
 
     def _stop_resource(self, entry: ResourceEntry) -> None:
         pass
+
+    # [新增/修改] 处理查询的核心方法
+    def process_query(self, resource_id: str, worker_id: str, query: str, top_k: Optional[int] = None) -> str:
+        # 1. 验证资源所有权 (逻辑保持不变)
+        with self.pool_lock:
+            entry = self.pool.get(resource_id)
+            if not entry or entry.allocated_to != worker_id:
+                raise PermissionError(f"Resource {resource_id} does not belong to worker {worker_id}")
+            if not self.rag_index_instance:
+                raise RuntimeError("RAG Index not initialized")
+
+        # 2. [核心修改] 确定最终使用的 K 值
+        # 如果 API 传来了数值，就用 API 的；否则用配置文件里的默认值
+        final_k = top_k if top_k is not None else self.default_top_k
+
+        # 3. 执行查询
+        try:
+            results = self.rag_index_instance.query(query, top_k=final_k)
+            # 简单的格式化返回，您也可以返回 JSON 结构
+            return results
+        except Exception as e:
+            logger.error(f"Error processing RAG query: {e}")
+            raise e

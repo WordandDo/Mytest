@@ -1,11 +1,13 @@
 # src/services/resource_api.py
 import sys
 import os
+import json
+import re  # [新增]
 import asyncio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any  # 确保导入 Optional
 import logging
 import uvicorn
 
@@ -13,9 +15,12 @@ cwd = os.getcwd()
 sys.path.append(cwd)
 sys.path.append(os.path.join(cwd, "src"))
 
-from services.simple_manager import SimplifiedResourceManager
+# [修改] 导入新的管理器类
+from services.simple_manager import GenericResourceManager
 
+# 1. 加载 .env 到环境变量
 load_dotenv()
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -23,25 +28,57 @@ logging.basicConfig(
 logger = logging.getLogger("ResourceAPI")
 
 app = FastAPI()
-manager: Optional[SimplifiedResourceManager] = None
+# [修改] 类型注解更新
+manager: Optional[GenericResourceManager] = None
 
-def load_config() -> Dict[str, Any]:
-    return {
-        # VM 配置
-        "provider_name": os.environ.get("PROVIDER_NAME", "aliyun"),
-        "num_vms": int(os.environ.get("NUM_VMS", 2)),
-        "region": os.environ.get("ALIYUN_REGION", "cn-hangzhou"),
-        "snapshot_name": os.environ.get("SNAPSHOT_NAME", "init_state"),
-        "os_type": "Ubuntu",
-        "action_space": "computer_13",
-        "screen_size": (1920, 1080),
-        "headless": True,
-        # RAG 配置
-        "num_rag_workers": int(os.environ.get("NUM_RAG_WORKERS", 2)),
-        "rag_index_path": os.environ.get("RAG_INDEX_PATH", "src/data/rag_index_storage"),
-        "rag_kb_path": os.environ.get("RAG_KB_PATH", "src/data/rag_demo.jsonl"),
-        "embedding_device": "cpu"
-    }
+# [新增] 带有环境变量替换功能的配置加载器
+def load_deployment_config(path: str = "deployment_config.json") -> Dict[str, Any]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Config file not found: {path}")
+    
+    logger.info(f"Loading config from {path}...")
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # 正则替换 ${VAR_NAME}
+    def replace_env(match):
+        var_name = match.group(1)
+        value = os.environ.get(var_name)
+        if value is None:
+            # 你可以选择报错，或者保留原样，这里选择警告并保留空字符串以防崩溃
+            logger.warning(f"⚠️ Environment variable {var_name} not found in .env")
+            return "" 
+        return value
+
+    # 执行替换
+    content_with_env = re.sub(r'\$\{(\w+)\}', replace_env, content)
+    
+    try:
+        return json.loads(content_with_env)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON config after env substitution: {e}")
+        raise
+
+@app.on_event("startup")
+async def startup_event():
+    global manager
+    try:
+        # 2. 加载统一配置
+        config = load_deployment_config("deployment_config.json")
+        
+        # 3. 初始化通用管理器
+        manager = GenericResourceManager(config)
+        
+        loop = asyncio.get_running_loop()
+        success = await loop.run_in_executor(None, manager.initialize)
+        
+        if not success:
+            logger.error("Failed to start Resource Manager (some pools may be offline)!")
+        
+        asyncio.create_task(monitor_resource_usage())
+    except Exception as e:
+        logger.error(f"Critical startup error: {e}", exc_info=True)
+        sys.exit(1)
 
 async def monitor_resource_usage():
     logger.info("Starting resource usage monitor (interval=30s)...")
@@ -49,32 +86,14 @@ async def monitor_resource_usage():
         try:
             if manager:
                 stats = manager.get_status()
-                # [修改] 打印 VM 和 RAG 的状态
-                log_msg = "📊 [Monitor] "
-                if "vm" in stats:
-                    s = stats["vm"]
-                    log_msg += f"VM(Free:{s.get('free')}/{s.get('total')}) "
-                if "rag" in stats:
-                    s = stats["rag"]
-                    log_msg += f"RAG(Free:{s.get('free')}/{s.get('total')})"
-                logger.info(log_msg)
+                # [修改] 动态打印所有资源池状态
+                log_parts = ["📊 [Monitor]"]
+                for name, s in stats.items():
+                    log_parts.append(f"{name.upper()}(Free:{s.get('free')}/{s.get('total')})")
+                logger.info(" ".join(log_parts))
         except Exception as e:
             logger.error(f"Monitor error: {e}")
         await asyncio.sleep(30)
-
-@app.on_event("startup")
-async def startup_event():
-    global manager
-    config = load_config()
-    manager = SimplifiedResourceManager(config)
-    
-    loop = asyncio.get_running_loop()
-    success = await loop.run_in_executor(None, manager.initialize)
-    
-    if not success:
-        logger.error("Failed to start Resource Manager (some pools may be offline)!")
-    
-    asyncio.create_task(monitor_resource_usage())
 
 # [修改] 请求模型增加 resource_type
 class AllocReq(BaseModel):
@@ -86,16 +105,18 @@ class ReleaseReq(BaseModel):
     resource_id: str
     worker_id: str
 
+# [修改] 将top_k改为Optional，默认为None，表示"使用服务器配置的默认值"
 class RAGQueryReq(BaseModel):
     resource_id: str
     worker_id: str
     query: str
-    top_k: int = 3
+    # [修改] 改为 Optional，默认为 None，表示"使用服务器配置的默认值"
+    top_k: Optional[int] = None
 
 @app.post("/allocate")
 def allocate_resource(req: AllocReq):
     try:
-        # 传递 type 参数
+        # GenericResourceManager.allocate 签名支持 resource_type
         res = manager.allocate(req.worker_id, req.timeout, resource_type=req.type)
         return res
     except Exception as e:
@@ -109,9 +130,11 @@ def release_resource(req: ReleaseReq, background_tasks: BackgroundTasks):
     background_tasks.add_task(manager.release, req.resource_id, req.worker_id)
     return {"status": "releasing"}
 
+# [修改] 直接透传 None 给 Manager，由底层决定最终数值
 @app.post("/query_rag")
 def query_rag_service(req: RAGQueryReq):
     try:
+        # 直接透传 None 给 Manager，由底层决定最终数值
         result_text = manager.query_rag(req.resource_id, req.worker_id, req.query, req.top_k)
         return {"status": "success", "results": result_text}
     except PermissionError as e:
