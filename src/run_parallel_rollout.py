@@ -193,6 +193,19 @@ def run_parallel_rollout(
                     json.dump(event, f, ensure_ascii=False)
                     f.write("\n")
 
+            # =================================================================
+            # [新增] 保存完整轨迹 (Trajectory)
+            # 这包含了 task 信息、Agent 与 MCP 工具交互的全过程 (VM/RAG 参数及输出)
+            # =================================================================
+            trajectory_file = os.path.join(config.output_dir, "trajectory.jsonl")
+            logger.info(f"Saving execution trajectories to {trajectory_file}...")
+            with open(trajectory_file, "w", encoding="utf-8") as f:
+                for res in results:
+                    # res 是 environment.run_task 的返回结果，通常包含 'messages' 字段
+                    json.dump(res, f, ensure_ascii=False)
+                    f.write("\n")
+            # =================================================================
+
             return {
                 "worker_results": results,
                 "benchmark_evaluation": benchmark_results

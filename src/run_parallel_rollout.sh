@@ -43,7 +43,7 @@ while ! nc -z localhost $RESOURCE_PORT; do
   sleep 1
   echo -n "."
   count=$((count+1))
-  if [ $count -ge 30 ]; then
+  if [ $count -ge 300 ]; then
       echo " ❌ Timeout! Resource API failed to start. Check $LOG_DIR/resource_api.log"
       exit 1
   fi
@@ -87,15 +87,14 @@ echo ""
 echo "👉 Now running your rollout script:"
 echo "----------------------------------------------------------------"
 
-# 直接执行您提供的命令
+# 编辑此部分
 python src/run_parallel_rollout.py \
-  --data_path src/data/rag_demo.jsonl \
-  --num_rollouts 2 \
+  --data_path hybrid_test_demo.jsonl \
+  --num_rollouts 3 \
   --env_mode http_mcp \
   --mcp_server_url http://localhost:8080 \
   --resource_api_url http://localhost:8000 \
-  --output_dir results/test_run_02
-
+  --output_dir results/test_run_hybrid
 # (可选) 脚本运行完后自动清理后台服务
 # Uncomment lines below if you want auto-cleanup
 # echo ""

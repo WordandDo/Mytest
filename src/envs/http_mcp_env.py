@@ -76,6 +76,9 @@ class HttpMCPEnv(Environment):
             for m in self.modules_config.get("modules", [])
             if m.get("resource_type") in RESOURCE_LIFECYCLE_MAP
         ]
+        
+        # [新增] 初始化变量，用于保存初始观察数据
+        self.initial_observation = None
 
         logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url}")
         logger.info(f"Active Resources from Config: {self.active_resources}")
@@ -194,6 +197,9 @@ class HttpMCPEnv(Environment):
         resource_init_data = resource_init_data or {}
         logger.info(f"Worker [{worker_id}] requesting resources: {self.active_resources}...")
         
+        # [新增] 清空上一轮的观察
+        self.initial_observation = None
+        
         retry_interval = 5
         max_retries = 100 
         
@@ -233,14 +239,19 @@ class HttpMCPEnv(Environment):
                 try:
                     # 调用 Alloc 工具
                     res = self._call_tool_sync(tool_name, args)
-                    status = self._parse_mcp_response(res)
+                    data = self._parse_mcp_response(res)
                     
-                    if status.get("status") != "success":
+                    if data.get("status") != "success":
                         # 失败：记录日志，跳出内层循环，触发回滚
-                        self._log_alloc_failure(worker_id, res_type, status, attempt)
+                        self._log_alloc_failure(worker_id, res_type, data, attempt)
                         all_success = False
                         break
                     
+                    # [新增] 如果是 VM 资源，提取并保存 observation
+                    if res_type == "vm" and "observation" in data:
+                        self.initial_observation = data["observation"]
+                        logger.info(f"[{worker_id}] Captured initial VM observation.")
+
                     # 成功：压入栈
                     allocated_stack.append(res_type)
                     if attempt == 0:

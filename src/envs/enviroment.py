@@ -220,6 +220,34 @@ class Environment(ABC):
         # 构建用户消息内容，包含问题文本
         user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"Question: {question}\n"}]
         # 如果环境支持格式化初始观察的功能，则将初始观察添加到消息中
+        
+        # [新增] 注入初始观察 (如果有)
+        # 注意：需要访问子类的成员变量，建议使用 getattr 安全获取
+        initial_obs = getattr(self, "initial_observation", None)
+        
+        if initial_obs and isinstance(initial_obs, dict):
+            # 1. 添加截图 (如果存在)
+            screenshot_b64 = initial_obs.get("screenshot")
+            if screenshot_b64:
+                user_content.append({
+                    "type": "text", 
+                    "text": "Here is the initial screen state of the computer:"
+                })
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{screenshot_b64}",
+                        "detail": "high"
+                    }
+                })
+            
+            # 2. 添加 Accessibility Tree (如果存在)
+            a11y_tree = initial_obs.get("accessibility_tree")
+            if a11y_tree:
+                user_content.append({
+                    "type": "text",
+                    "text": f"Accessibility Tree:\n{a11y_tree}"
+                })
 
         messages.append({"role": "user", "content": user_content})
 
