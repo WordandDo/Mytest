@@ -191,13 +191,12 @@ class Environment(ABC):
 
         return result
 
-    def _run_conversation(
-        self,
-        question: str,
-        model_name: str,
-        max_turns: int,
-        max_retries: int,
-        logger: logging.Logger,
+    def _run_conversation(self, 
+                         question: str, 
+                         model_name: str, 
+                         max_turns: int, 
+                         max_retries: int, 
+                         logger: logging.Logger
     ) -> List[Dict[str, Any]]:
         """
         执行 Agent 对话循环
@@ -264,21 +263,55 @@ class Environment(ABC):
                             print(f"Round {turn_count}: 🔧 Using tool: {tool_name}")
                             print(f"Round {turn_count}:    Arguments: {tool_args}")
                             
-                            # Execute tool
-                            tool_result = self.execute_tool(
-                                tool_name, 
-                                tool_args
-                            )
+                            # 1. 执行工具 (现在 execute_tool 可能返回字典)
+                            tool_output = self.execute_tool(tool_name, tool_args)
                             
-                            print(f"Round {turn_count}:    Result: {tool_result[:100]}...")
+                            # 2. 解析标准化输出 (支持纯文本和结构化数据)
+                            # 标准结构: {"text": "...", "images": ["base64...", ...]}
+                            if isinstance(tool_output, dict) and "images" in tool_output:
+                                content_str = tool_output.get("text", "")
+                                image_list = tool_output.get("images", [])
+                            else:
+                                # 兼容旧代码或纯文本返回
+                                content_str = str(tool_output)
+                                image_list = []
+
+                            print(f"Round {turn_count}:    Result: {content_str[:100]}... (Images: {len(image_list)})")
                             
-                            # Add tool result to conversation
+                            # 3. 添加必须的 Tool Message (用于闭合函数调用链)
+                            # 注意：OpenAI 要求 tool role 的 content 必须是 string
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
                                 "name": tool_name,
-                                "content": tool_result
+                                "content": content_str 
                             })
+
+                            # 4. [新增] 注入 User Message (如果有图片)
+                            # 利用 GPT-4 的 Vision 能力，将图片作为新的观察传入
+                            if image_list:
+                                user_content_blocks = []
+                                
+                                # 可选：添加文本引导
+                                user_content_blocks.append({
+                                    "type": "text", 
+                                    "text": f"Observation from tool '{tool_name}' (Screenshots):"
+                                })
+                                
+                                # 添加所有图片
+                                for img_b64 in image_list:
+                                    user_content_blocks.append({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/png;base64,{img_b64}",
+                                            "detail": "high" # 或 "auto"
+                                        }
+                                    })
+                                
+                                messages.append({
+                                    "role": "user",
+                                    "content": user_content_blocks
+                                })
                         
                     else:
                         logger.info(f"Turn {turn_count}: final answer produced")

@@ -131,6 +131,35 @@ async def get_observation(worker_id: str) -> str:
         "accessibility_tree": ctrl.get_accessibility_tree()
     })
 
+@ToolRegistry.register_tool("desktop_observation")
+@mcp.tool()
+async def start_recording(worker_id: str) -> str:
+    """[新增] 开始屏幕录制"""
+    try:
+        ctrl = _get_controller(worker_id)
+        ctrl.start_recording()
+        return "Recording started"
+    except Exception as e:
+        return f"Failed to start recording: {str(e)}"
+
+@ToolRegistry.register_tool("desktop_observation")
+@mcp.tool()
+async def stop_recording(worker_id: str, save_path: str) -> str:
+    """[新增] 停止录制并保存文件
+    注意：save_path 是 Gateway 服务器本地的文件路径
+    """
+    try:
+        ctrl = _get_controller(worker_id)
+        # 确保目录存在
+        directory = os.path.dirname(save_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory)
+            
+        ctrl.end_recording(save_path)
+        return f"Recording saved to {save_path}"
+    except Exception as e:
+        return f"Failed to stop recording: {str(e)}"
+
 # --- 动作工具 (Group: desktop_action) ---
 # 所有工具均增加了 worker_id 参数
 

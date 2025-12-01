@@ -288,17 +288,83 @@ class HttpMCPEnv(Environment):
              logger.warning(f"Worker [{worker_id}] {res_type} alloc error: {msg}")
 
     def execute_tool(self, tool_name: str, params: Union[str, dict], **kwargs) -> Any:
+        """
+        [修改] 执行工具并应用多模态处理
+        返回标准结构: {"text": str, "images": List[str]}
+        """
         if isinstance(params, str):
             try: params = json.loads(params)
             except: params = {"arg": params}
         try:
-            result = self._call_tool_sync(tool_name, params)
-            if isinstance(result, (dict, list)):
-                return json.dumps(result, ensure_ascii=False)
-            return str(result)
+            # 2. 调用 MCP 工具 (获取原始结果，通常是包含截图的 JSON 字符串)
+            raw_result = self._call_tool_sync(tool_name, params)
+            
+            # 3. [新增] 调用多模态处理逻辑
+            structured_result = self._process_multimodal_response(raw_result)
+            return structured_result
+            
         except Exception as e:
             logger.error(f"Execute tool {tool_name} error: {e}")
-            return json.dumps({"status": "error", "message": str(e)})
+            # 出错时返回标准错误结构
+            return {
+                "text": json.dumps({"status": "error", "message": str(e)}),
+                "images": []
+            }
+
+    def _process_multimodal_response(self, raw_response: Any) -> Dict[str, Any]:
+        """
+        [新增] 数据清洗与分离函数
+        功能：
+        1. 解析 JSON 字符串。
+        2. 提取 'screenshot' 字段中的 Base64 图片。
+        3. 将图片分离，避免其进入 Text Context。
+        """
+        # 默认返回值
+        processed = {"text": str(raw_response), "images": []}
+        
+        # 尝试解析 JSON
+        try:
+            data = raw_response
+            if isinstance(data, str):
+                # 快速检查是否像 JSON，避免不必要的解析
+                if not (data.strip().startswith("{") or data.strip().startswith("[")):
+                    return processed
+                data = json.loads(data)
+            
+            if not isinstance(data, dict):
+                return processed
+
+            # --- 提取图片逻辑 (适配 OSWorld 格式) ---
+            # 目标结构通常是: {"status": "...", "observation": {"screenshot": "...", ...}}
+            # 或者直接: {"screenshot": "...", ...}
+            
+            images = []
+            
+            # 递归或直接查找 screenshot 字段并移除它
+            # 策略：为了保持原始数据的纯净，我们先复制一份
+            # 注意：这里为了性能做了简化处理，主要针对 OSWorld 的结构
+            
+            # Case 1: 在 observation 内部
+            if "observation" in data and isinstance(data["observation"], dict):
+                obs = data["observation"]
+                if "screenshot" in obs and obs["screenshot"]:
+                    images.append(obs.pop("screenshot")) # 提取并从原字典中删除
+            
+            # Case 2: 在顶层
+            elif "screenshot" in data and data["screenshot"]:
+                images.append(data.pop("screenshot")) # 提取并从原字典中删除
+
+            # 更新返回值
+            # data 现在是移除了图片的"干净"字典，适合转为文本给 Tool Message
+            processed["text"] = json.dumps(data, ensure_ascii=False)
+            processed["images"] = images
+            
+            return processed
+
+        except Exception as e:
+            # 解析失败则回退到原始文本
+            logger.warning(f"Failed to process multimodal response: {e}")
+            return {"text": str(raw_response), "images": []}
 
     def _run_sync(self, coro):
         """统一的异步转同步辅助函数"""
