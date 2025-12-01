@@ -466,7 +466,6 @@ if __name__ == "__main__":
     
     # 环境配置
     env_kwargs: Dict[str, Any] = {
-        "action_space": "computer_13",
         "observation_type": "screenshot_a11y_tree",
         "mcp_server_url": args.mcp_server_url,
         "resource_api_url": args.resource_api_url,

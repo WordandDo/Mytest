@@ -57,9 +57,8 @@ def main():
     
     for module in modules:
         r_type = module.get("resource_type", "unknown")
-        action_space = module.get("action_space", "default")
         
-        logger.info(f"Loading module: Type={r_type}, ActionSpace={action_space}")
+        logger.info(f"Loading module: Type={r_type}")
         
         # 通过注册表获取该模块对应的所有 Python 函数
         tool_functions = ToolRegistry.get_tools_by_config(module)

@@ -21,9 +21,8 @@ from mcp_server.core.registry import ToolRegistry
 
 mcp = FastMCP("OSWorld Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
-ACTION_SPACE = os.environ.get("ACTION_SPACE", "computer_13")
 
-print(f"🚀 Starting OSWorld MCP Server in [{ACTION_SPACE}] mode")
+print(f"🚀 Starting OSWorld MCP Server (Registry Mode)")
 
 # [关键修改] 全局会话字典，Key 为 worker_id
 GLOBAL_SESSIONS = {}
@@ -31,13 +30,12 @@ GLOBAL_SESSIONS = {}
 def _get_controller(worker_id: str) -> PythonController:
     session = GLOBAL_SESSIONS.get(worker_id)
     if not session or not session.get("controller"):
-        raise RuntimeError(f"Session not found for worker: {worker_id}. Call 'setup_environment' first.")
+        raise RuntimeError(f"Session not found for worker: {worker_id}. Call 'setup_vm_session' first.")
     return session["controller"]
 
 # --- 生命周期工具 (Group: computer_lifecycle) ---
 
 @ToolRegistry.register_tool("computer_lifecycle")  # [新增注册]
-@mcp.tool()
 async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_script: str = "") -> str:
     """初始化 VM 会话：申请 VM 资源并初始化控制器。
     (原名 setup_environment，已重命名以消除歧义)
@@ -94,6 +92,7 @@ async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_
                     
                     # 执行 config 中的每一步 (download, execute 等)
                     if setup_steps:
+                        from src.utils.desktop_env.controllers.setup import execute_setup_steps
                         execute_setup_steps(controller, setup_steps)
                     
                     # 将 evaluator 缓存到 GLOBAL_SESSIONS 中供后续 evaluate_task 使用
@@ -123,7 +122,6 @@ async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_
         return json.dumps({"status": "error", "message": str(e)})
 
 @ToolRegistry.register_tool("computer_lifecycle") # [新增注册]
-@mcp.tool()
 async def teardown_environment(worker_id: str) -> str:
     """释放资源"""
     session = GLOBAL_SESSIONS.get(worker_id)
@@ -139,7 +137,6 @@ async def teardown_environment(worker_id: str) -> str:
     return "Released"
 
 @ToolRegistry.register_tool("computer_lifecycle") # [新增注册] 归类为生命周期或评估
-@mcp.tool()
 async def evaluate_task(worker_id: str) -> str:
     """评估任务执行结果"""
     session = GLOBAL_SESSIONS.get(worker_id)
@@ -164,7 +161,6 @@ async def evaluate_task(worker_id: str) -> str:
 # --- 观察工具 (Group: desktop_observation) ---
 
 @ToolRegistry.register_tool("desktop_observation") # [新增注册]
-@mcp.tool()
 async def get_observation(worker_id: str) -> str:
     """获取当前屏幕状态"""
     ctrl = _get_controller(worker_id)
@@ -176,7 +172,6 @@ async def get_observation(worker_id: str) -> str:
     })
 
 @ToolRegistry.register_tool("desktop_observation")
-@mcp.tool()
 async def start_recording(worker_id: str) -> str:
     """[新增] 开始屏幕录制"""
     try:
@@ -187,7 +182,6 @@ async def start_recording(worker_id: str) -> str:
         return f"Failed to start recording: {str(e)}"
 
 @ToolRegistry.register_tool("desktop_observation")
-@mcp.tool()
 async def stop_recording(worker_id: str, save_path: str) -> str:
     """[新增] 停止录制并保存文件
     注意：save_path 是 Gateway 服务器本地的文件路径
@@ -204,141 +198,109 @@ async def stop_recording(worker_id: str, save_path: str) -> str:
     except Exception as e:
         return f"Failed to stop recording: {str(e)}"
 
-# --- 动作工具 (Group: desktop_action) ---
-# 所有工具均增加了 worker_id 参数
+# --- 动作工具：拆分为 Computer 13, PyAutoGUI 和 Shared ---
 
-if ACTION_SPACE == "computer_13":
+# 1. Computer 13 专属动作
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_mouse_move(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
+    ctrl = _get_controller(worker_id)
+    params = {}
+    if x is not None and y is not None:
+        params = {"x": x, "y": y}
+    ctrl.execute_action({"action_type": "MOVE_TO", "parameters": params})
+    return json.dumps({"status": "success", "action": "MOVE_TO"})
 
-    @ToolRegistry.register_tool("desktop_action") # [新增注册]
-    @mcp.tool()
-    async def desktop_mouse_move(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
-        ctrl = _get_controller(worker_id)
-        params = {}
-        if x is not None and y is not None:
-            params = {"x": x, "y": y}
-        ctrl.execute_action({"action_type": "MOVE_TO", "parameters": params})
-        return json.dumps({"status": "success", "action": "MOVE_TO"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_mouse_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None, button: str = "left", num_clicks: int = 1) -> str:
+    ctrl = _get_controller(worker_id)
+    params = {"button": button, "num_clicks": num_clicks}
+    if x is not None and y is not None:
+        params.update({"x": x, "y": y})
+    ctrl.execute_action({"action_type": "CLICK", "parameters": params})
+    return json.dumps({"status": "success", "action": "CLICK"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_mouse_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None, button: str = "left", num_clicks: int = 1) -> str:
-        ctrl = _get_controller(worker_id)
-        params = {"button": button, "num_clicks": num_clicks}
-        if x is not None and y is not None:
-            params.update({"x": x, "y": y})
-        ctrl.execute_action({"action_type": "CLICK", "parameters": params})
-        return json.dumps({"status": "success", "action": "CLICK"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_mouse_right_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
+    ctrl = _get_controller(worker_id)
+    params = {}
+    if x is not None and y is not None:
+        params = {"x": x, "y": y}
+    ctrl.execute_action({"action_type": "RIGHT_CLICK", "parameters": params})
+    return json.dumps({"status": "success", "action": "RIGHT_CLICK"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_mouse_button(worker_id: str, action: str, button: str = "left") -> str:
-        ctrl = _get_controller(worker_id)
-        act_type = "MOUSE_DOWN" if action.lower() == "down" else "MOUSE_UP"
-        ctrl.execute_action({"action_type": act_type, "parameters": {"button": button}})
-        return json.dumps({"status": "success", "action": act_type})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_mouse_double_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
+    ctrl = _get_controller(worker_id)
+    params = {}
+    if x is not None and y is not None:
+        params = {"x": x, "y": y}
+    ctrl.execute_action({"action_type": "DOUBLE_CLICK", "parameters": params})
+    return json.dumps({"status": "success", "action": "DOUBLE_CLICK"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_mouse_right_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
-        ctrl = _get_controller(worker_id)
-        params = {}
-        if x is not None and y is not None:
-            params = {"x": x, "y": y}
-        ctrl.execute_action({"action_type": "RIGHT_CLICK", "parameters": params})
-        return json.dumps({"status": "success", "action": "RIGHT_CLICK"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_mouse_drag(worker_id: str, x: int, y: int) -> str:
+    ctrl = _get_controller(worker_id)
+    ctrl.execute_action({"action_type": "DRAG_TO", "parameters": {"x": x, "y": y}})
+    return json.dumps({"status": "success", "action": "DRAG_TO"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_mouse_double_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
-        ctrl = _get_controller(worker_id)
-        params = {}
-        if x is not None and y is not None:
-            params = {"x": x, "y": y}
-        ctrl.execute_action({"action_type": "DOUBLE_CLICK", "parameters": params})
-        return json.dumps({"status": "success", "action": "DOUBLE_CLICK"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_scroll(worker_id: str, dx: Optional[int] = None, dy: Optional[int] = None) -> str:
+    ctrl = _get_controller(worker_id)
+    params = {}
+    if dx is not None: params["dx"] = dx
+    if dy is not None: params["dy"] = dy
+    ctrl.execute_action({"action_type": "SCROLL", "parameters": params})
+    return json.dumps({"status": "success", "action": "SCROLL"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_mouse_drag(worker_id: str, x: int, y: int) -> str:
-        ctrl = _get_controller(worker_id)
-        ctrl.execute_action({"action_type": "DRAG_TO", "parameters": {"x": x, "y": y}})
-        return json.dumps({"status": "success", "action": "DRAG_TO"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_type(worker_id: str, text: str) -> str:
+    ctrl = _get_controller(worker_id)
+    ctrl.execute_action({"action_type": "TYPING", "parameters": {"text": text}})
+    return json.dumps({"status": "success", "action": "TYPING"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_scroll(worker_id: str, dx: Optional[int] = None, dy: Optional[int] = None) -> str:
-        ctrl = _get_controller(worker_id)
-        params = {}
-        if dx is not None: params["dx"] = dx
-        if dy is not None: params["dy"] = dy
-        ctrl.execute_action({"action_type": "SCROLL", "parameters": params})
-        return json.dumps({"status": "success", "action": "SCROLL"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_key_press(worker_id: str, key: str) -> str:
+    ctrl = _get_controller(worker_id)
+    ctrl.execute_action({"action_type": "PRESS", "parameters": {"key": key}})
+    return json.dumps({"status": "success", "action": "PRESS"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_type(worker_id: str, text: str) -> str:
-        ctrl = _get_controller(worker_id)
-        ctrl.execute_action({"action_type": "TYPING", "parameters": {"text": text}})
-        return json.dumps({"status": "success", "action": "TYPING"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_key_hold(worker_id: str, key: str, action: str) -> str:
+    ctrl = _get_controller(worker_id)
+    act_type = "KEY_DOWN" if action.lower() == "down" else "KEY_UP"
+    ctrl.execute_action({"action_type": act_type, "parameters": {"key": key}})
+    return json.dumps({"status": "success", "action": "KEY_ACTION"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_key_press(worker_id: str, key: str) -> str:
-        ctrl = _get_controller(worker_id)
-        ctrl.execute_action({"action_type": "PRESS", "parameters": {"key": key}})
-        return json.dumps({"status": "success", "action": "PRESS"})
+@ToolRegistry.register_tool("desktop_action_computer13")
+async def desktop_hotkey(worker_id: str, keys: List[str]) -> str:
+    ctrl = _get_controller(worker_id)
+    ctrl.execute_action({"action_type": "HOTKEY", "parameters": {"keys": keys}})
+    return json.dumps({"status": "success", "action": "HOTKEY"})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_key_hold(worker_id: str, key: str, action: str) -> str:
-        ctrl = _get_controller(worker_id)
-        act_type = "KEY_DOWN" if action.lower() == "down" else "KEY_UP"
-        ctrl.execute_action({"action_type": act_type, "parameters": {"key": key}})
-        return json.dumps({"status": "success", "action": act_type})
+# 2. PyAutoGUI 专属动作
+@ToolRegistry.register_tool("desktop_action_pyautogui")
+async def desktop_execute_python_script(worker_id: str, script: str) -> str:
+    ctrl = _get_controller(worker_id)
+    try:
+        result = ctrl.execute_python_command(script)
+        return json.dumps({"status": "success", "output": result})
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_hotkey(worker_id: str, keys: List[str]) -> str:
-        ctrl = _get_controller(worker_id)
-        ctrl.execute_action({"action_type": "HOTKEY", "parameters": {"keys": keys}})
-        return json.dumps({"status": "success", "action": "HOTKEY"})
+# 3. 共享动作 (注册到两个组)
+@ToolRegistry.register_tool("desktop_action_computer13")
+@ToolRegistry.register_tool("desktop_action_pyautogui")
+async def desktop_mouse_button(worker_id: str, action: str, button: str = "left") -> str:
+    # 注意：computer_13 用 MOUSE_DOWN/UP，PyAutoGUI 模式下 Controller 也应该能处理
+    ctrl = _get_controller(worker_id)
+    act_type = "MOUSE_DOWN" if action.lower() == "down" else "MOUSE_UP"
+    ctrl.execute_action({"action_type": act_type, "parameters": {"button": button}})
+    return json.dumps({"status": "success", "action": act_type})
 
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_control(worker_id: str, action: str) -> str:
-        ctrl = _get_controller(worker_id)
-        act_str = action.upper()
-        ctrl.execute_action(act_str)
-        return json.dumps({"status": "success", "action": act_str})
-
-# --- PyAutoGUI Mode ---
-elif ACTION_SPACE == "pyautogui":
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_execute_python_script(worker_id: str, script: str) -> str:
-        ctrl = _get_controller(worker_id)
-        try:
-            result = ctrl.execute_python_command(script)
-            return json.dumps({"status": "success", "output": result})
-        except Exception as e:
-            return json.dumps({"status": "error", "message": str(e)})
-
-    @ToolRegistry.register_tool("desktop_action")
-    @mcp.tool()
-    async def desktop_control(worker_id: str, action: str) -> str:
-        ctrl = _get_controller(worker_id)
-        act_str = action.upper()
-        ctrl.execute_action(act_str)
-        return json.dumps({"status": "success", "action": act_str})
-
-
-if __name__ == "__main__":
-    # 直接修改 mcp 实例的 settings 属性
-    mcp.settings.debug = True
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = 8080
-    
-    print(f"🚀 Starting MCP Server on {mcp.settings.host}:{mcp.settings.port} (SSE Mode)...")
-    
-    # 直接调用 run，不传 host/port，它会自动读取 settings 中的配置
-    mcp.run(transport='sse')
+@ToolRegistry.register_tool("desktop_action_computer13")
+@ToolRegistry.register_tool("desktop_action_pyautogui")
+async def desktop_control(worker_id: str, action: str) -> str:
+    ctrl = _get_controller(worker_id)
+    act_str = action.upper()
+    ctrl.execute_action(act_str)
+    return json.dumps({"status": "success", "action": act_str})

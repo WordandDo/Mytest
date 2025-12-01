@@ -62,7 +62,6 @@ class ToolRegistry:
     def get_tools_by_config(cls, module_config: dict) -> List[Callable]:
         """
         根据配置项自动解析需要的工具。
-        支持根据 resource_type 或 action_space 进行特殊处理。
         """
         tools = []
         
@@ -71,12 +70,10 @@ class ToolRegistry:
         for group in groups:
             tools.extend(cls.get_tools_by_group(group))
             
-        # 2. 根据 resource_type 自动追加默认组 (可选逻辑)
-        r_type = module_config.get("resource_type")
-        if r_type == "rag" and "rag_lifecycle" not in groups:
-             tools.extend(cls.get_tools_by_group("rag_lifecycle"))
-
-        # 3. 去重 (保持顺序)
+        # 2. (可选) 根据 resource_type 自动追加默认组的逻辑可以移除或保留
+        # 建议：既然现在配置很明确，可以移除这里的隐式逻辑，全靠 gateway_config.json 控制
+        
+        # 3. 去重
         seen = set()
         unique_tools = []
         for tool in tools:

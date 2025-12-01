@@ -56,7 +56,7 @@ def load_deployment_config(path: str = "deployment_config.json") -> Dict[str, An
     try:
         return json.loads(content_with_env)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON config after env substitution: {e}")
+        logger.error(f"Failed to parse JSON config after env substitution: {e}", exc_info=True)
         raise
 
 @app.on_event("startup")
@@ -77,7 +77,7 @@ async def startup_event():
         
         asyncio.create_task(monitor_resource_usage())
     except Exception as e:
-        logger.error(f"Critical startup error: {e}", exc_info=True)
+        logger.critical(f"Critical startup error: {e}", exc_info=True)
         sys.exit(1)
 
 async def monitor_resource_usage():
@@ -92,7 +92,7 @@ async def monitor_resource_usage():
                     log_parts.append(f"{name.upper()}(Free:{s.get('free')}/{s.get('total')})")
                 logger.info(" ".join(log_parts))
         except Exception as e:
-            logger.error(f"Monitor error: {e}")
+            logger.error(f"Monitor error: {e}", exc_info=True)
         await asyncio.sleep(30)
 
 # [修改] 更新 AllocReq 模型，增加 resource_types 字段
@@ -117,25 +117,33 @@ class RAGQueryReq(BaseModel):
 
 @app.post("/allocate")
 def allocate_resource(req: AllocReq):
+    # [Log] 记录分配请求的到达
+    req_desc = req.resource_types if (req.resource_types and len(req.resource_types) > 0) else req.type
+    logger.info(f"📥 [AllocReq] Worker={req.worker_id} requesting: {req_desc} (Timeout={req.timeout}s)")
+    
     try:
         # [新增] 优先检查是否有批量申请需求
         if req.resource_types and len(req.resource_types) > 0:
-            # 调用原子申请接口
-            # 返回格式形如: {"vm": {...}, "rag": {...}}
-            return manager.allocate_atomic(req.worker_id, req.resource_types, req.timeout)
+            result = manager.allocate_atomic(req.worker_id, req.resource_types, req.timeout)
         else:
             # [兼容] 走旧的单资源申请路径
-            # 返回格式形如: {...} (单个资源信息)
-            return manager.allocate(req.worker_id, req.timeout, resource_type=req.type)
+            result = manager.allocate(req.worker_id, req.timeout, resource_type=req.type)
+        
+        # [Log] 记录分配成功
+        logger.info(f"✅ [AllocOK] Worker={req.worker_id} acquired resources.")
+        return result
             
     except Exception as e:
-        logger.error(f"Allocation failed: {e}")
+        # [Log] 记录分配失败，并包含完整堆栈信息
+        logger.error(f"❌ [AllocFail] Worker={req.worker_id} failed: {e}", exc_info=True)
         if "No resources available" in str(e) or "timeout" in str(e).lower():
              raise HTTPException(status_code=503, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/release")
 def release_resource(req: ReleaseReq, background_tasks: BackgroundTasks):
+    # [Log] 记录释放请求
+    logger.info(f"🗑️ [ReleaseReq] Worker={req.worker_id} releasing Resource={req.resource_id}")
     background_tasks.add_task(manager.release, req.resource_id, req.worker_id)
     return {"status": "releasing"}
 
@@ -143,13 +151,16 @@ def release_resource(req: ReleaseReq, background_tasks: BackgroundTasks):
 @app.post("/query_rag")
 def query_rag_service(req: RAGQueryReq):
     try:
-        # 直接透传 None 给 Manager，由底层决定最终数值
+        # [Log] 记录RAG查询
+        logger.info(f"🔍 [RAGQuery] Worker={req.worker_id} Resource={req.resource_id}")
         result_text = manager.query_rag(req.resource_id, req.worker_id, req.query, req.top_k)
         return {"status": "success", "results": result_text}
     except PermissionError as e:
+        logger.warning(f"⚠️ [RAGQuery] Permission denied for {req.worker_id}: {e}")
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        logger.error(f"RAG Query failed: {e}")
+        # [Log] 记录RAG查询错误，并包含完整堆栈信息
+        logger.error(f"❌ [RAGQuery] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/status")

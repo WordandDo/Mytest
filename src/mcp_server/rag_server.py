@@ -28,7 +28,6 @@ RAG_SESSIONS: Dict[str, Dict] = {}
 print("🚀 Starting RAG MCP Server (Client Mode)")
 
 @ToolRegistry.register_tool("rag_lifecycle")
-@mcp.tool()
 async def setup_rag_session(worker_id: str) -> str:
     """初始化 RAG 会话：申请访问 Token。
     (原名 setup_rag_engine)
@@ -62,7 +61,6 @@ async def setup_rag_session(worker_id: str) -> str:
     })
 
 @ToolRegistry.register_tool("rag_query")
-@mcp.tool()
 async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> str:
     """远程查询知识库"""
     session = RAG_SESSIONS.get(worker_id)
@@ -91,7 +89,6 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> st
         return json.dumps({"status": "error", "message": str(e)})
 
 @ToolRegistry.register_tool("rag_lifecycle")
-@mcp.tool()
 async def release_rag_session(worker_id: str) -> str:
     """释放 RAG 资源会话"""
     session = RAG_SESSIONS.pop(worker_id, None)

@@ -5,7 +5,6 @@ import json
 import logging
 import asyncio
 import time
-import requests
 from typing import Dict, Any, Union, Optional, List, Tuple
 from tools.tool import Tool
 
@@ -24,7 +23,13 @@ logger = logging.getLogger(__name__)
 # 定义了每种 resource_type 对应的申请(Alloc)和释放(Release)工具名称
 # 这使得 Client 端可以根据配置动态调用正确的生命周期工具
 RESOURCE_LIFECYCLE_MAP = {
-    "vm": {
+    "vm_computer_13": {
+        "alloc": "setup_vm_session",
+        "release": "teardown_environment",
+        "alloc_args": ["config_name", "task_id"], # 除去 worker_id 外需要的参数
+        "init_param_name": "init_script"  # VM 初始化脚本参数名
+    },
+    "vm_pyautogui": {
         "alloc": "setup_vm_session",
         "release": "teardown_environment",
         "alloc_args": ["config_name", "task_id"], # 除去 worker_id 外需要的参数
@@ -86,6 +91,11 @@ class HttpMCPEnv(Environment):
         
         # [新增] 标记是否已初始化工具
         self._tools_initialized = False
+
+        # [新增] 初始化一个持久的事件循环
+        import asyncio
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
 
         logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url}")
         logger.info(f"Active Resources from Config: {self.active_resources}")
@@ -202,18 +212,20 @@ class HttpMCPEnv(Environment):
 
     # 需要添加到 HttpMCPEnv 类中
     def _run_sync(self, awaitable):
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(awaitable)
-        finally:
-            loop.close()
+        """
+        使用实例共享的事件循环运行异步任务，避免关闭导致 SSE 监听断开。
+        """
+        return self._loop.run_until_complete(awaitable)
 
     def _list_tools_sync(self):
         return self._run_sync(self.mcp_client.list_tools())
 
     def _call_tool_sync(self, name, arguments):
+        # 自动注入 worker_id
+        # 这是为了确保 Agent 调用 RAG 等工具时，后端能识别是哪个 Worker 发起的请求
+        if isinstance(arguments, dict) and "worker_id" not in arguments:
+            arguments["worker_id"] = self.worker_id
+            
         return self._run_sync(self.mcp_client.call_tool(name, arguments))
 
     def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:
@@ -349,34 +361,43 @@ class HttpMCPEnv(Environment):
 
     def _allocate_resources_atomically(self, resource_init_data: Dict[str, Any]) -> bool:
         """
-        使用原子化方式申请资源（通过资源管理API）
+        使用原子化方式申请资源（通过调用 Gateway 的系统工具）
+        [优化] 不再直接访问 8000 端口，而是通过 8080 Gateway 的 'allocate_batch_resources' 工具转发
         """
         try:
-            # 获取资源管理API的URL
-            resource_api_url = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
-            
-            # 构造请求 Payload
-            payload = {
-                "worker_id": self.worker_id,
-                "timeout": 600,
-                # 传入列表，触发后端的 allocate_atomic
-                "resource_types": self.active_resources
+            # 1. 构造工具参数
+            # 注意：_call_tool_sync 会自动注入 'worker_id'，所以这里只需传业务参数
+            # 但为了明确起见，显式传入也无妨
+            args = {
+                "resource_types": self.active_resources,
+                "timeout": 600
             }
             
-            # 发送请求
-            resp = requests.post(f"{resource_api_url}/allocate", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            logger.info(f"Worker [{self.worker_id}] calling MCP tool 'allocate_batch_resources' via Gateway...")
 
-            # 处理响应
-            # 原子申请返回的是字典: {"vm": resource_data, "rag": resource_data}
+            # 2. 调用 MCP 工具 (走 SSE 通道 -> Gateway -> System Tools -> Resource API)
+            # 这一步替代了原来的 requests.post
+            res = self._call_tool_sync("allocate_batch_resources", args)
+            
+            # 3. 解析响应
+            # Gateway 的工具返回的是 JSON 字符串，_parse_mcp_response 会将其转为字典
+            data = self._parse_mcp_response(res)
+            
+            # 4. 错误处理
+            # 检查是否是工具执行层面的错误 (例如 Resource API 返回 500 或超时)
+            if isinstance(data, dict) and data.get("status") == "error":
+                 logger.error(f"Atomic alloc tool failed: {data.get('message')}")
+                 return False
+
+            # 5. 处理成功的资源数据: {"vm": {...}, "rag": {...}}
+            # 这一步逻辑与原来保持一致，因为 Gateway 透传了 Resource API 的返回结构
             for r_type, r_data in data.items():
                 self._setup_single_resource(r_type, r_data)
             
             return True
 
         except Exception as e:
-            logger.error(f"Failed to allocate resources atomically {self.active_resources}: {e}")
+            logger.error(f"Failed to allocate resources atomically via MCP: {e}")
             return False
 
     def _setup_single_resource(self, res_type: str, res_data: dict):
@@ -412,3 +433,9 @@ class HttpMCPEnv(Environment):
 
     def get_allocated_resource_id(self) -> str:
         return self.worker_id
+
+    def env_close(self):
+        # ... 其他清理逻辑 ...
+        if hasattr(self, '_loop') and not self._loop.is_closed():
+            self._loop.close()
+        super().env_close()
