@@ -26,12 +26,14 @@ RESOURCE_LIFECYCLE_MAP = {
     "vm": {
         "alloc": "setup_vm_session",
         "release": "teardown_environment",
-        "alloc_args": ["config_name", "task_id"] # 除去 worker_id 外需要的参数
+        "alloc_args": ["config_name", "task_id"], # 除去 worker_id 外需要的参数
+        "init_param_name": "init_script"  # VM 初始化脚本参数名
     },
     "rag": {
         "alloc": "setup_rag_session",
         "release": "release_rag_session",
-        "alloc_args": []
+        "alloc_args": [],
+        "init_param_name": "rag_config"  # RAG 配置参数名
     }
 }
 
@@ -179,12 +181,17 @@ class HttpMCPEnv(Environment):
         # 建立长连接
         self._run_sync(self.mcp_client.connect())
 
-    def allocate_resource(self, worker_id: str) -> bool:
+    def allocate_resource(self, worker_id: str, resource_init_data: Dict[str, Any] = None) -> bool:
         """
         [核心重构] 动态事务性资源分配：
         遍历配置中的 active_resources，依次申请资源。
         如果任一步骤失败，回滚所有已申请资源。
+        
+        Args:
+            resource_init_data: 过滤后的资源配置字典，例如:
+                                {"vm": {"content": "..."}, "rag": {...}}
         """
+        resource_init_data = resource_init_data or {}
         logger.info(f"Worker [{worker_id}] requesting resources: {self.active_resources}...")
         
         retry_interval = 5
@@ -207,6 +214,21 @@ class HttpMCPEnv(Environment):
                 if res_type == "vm":
                     args["config_name"] = self.config_name
                     args["task_id"] = "dynamic_alloc"
+                
+                # [关键]：注入 Task 特定的初始化数据
+                if res_type in resource_init_data:
+                    # 获取该资源对应的参数名 (需要在 RESOURCE_LIFECYCLE_MAP 中预定义)
+                    # 例如 vm -> "init_script", rag -> "rag_config"
+                    param_name = lifecycle.get("init_param_name") 
+                    
+                    if param_name:
+                        # 提取 content，支持直接传字符串或 JSON dumps
+                        config_content = resource_init_data[res_type].get("content", "")
+                        if isinstance(config_content, (dict, list)):
+                            import json
+                            config_content = json.dumps(config_content)
+                            
+                        args[param_name] = config_content
                 
                 try:
                     # 调用 Alloc 工具

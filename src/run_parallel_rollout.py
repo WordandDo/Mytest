@@ -206,6 +206,34 @@ def run_parallel_rollout(
             logger.error(f"Failed to stop resources: {exc}")
 
 
+def get_active_resource_configs(environment, task_item):
+    """
+    根据环境实际启用的资源类型筛选任务中的资源配置
+    
+    Args:
+        environment: Environment 实例
+        task_item: BenchmarkItem 任务项
+        
+    Returns:
+        dict: 过滤后的资源配置字典
+    """
+    # 1. 获取 Task 中定义的所有资源配置
+    # benchmark.py 将其存放在 metadata 中
+    raw_configs = task_item.get("metadata", {}).get("resource_configs", {})
+    
+    # 2. 获取当前环境实际启用的资源类型
+    # HttpMCPEnv 从 gateway_config.json 加载了 active_resources (如 ['vm', 'rag'])
+    active_types = getattr(environment, "active_resources", [])
+    
+    # 3. 仅保留已启用资源的配置
+    active_configs = {}
+    for res_type in active_types:
+        if res_type in raw_configs:
+            active_configs[res_type] = raw_configs[res_type]
+            
+    return active_configs
+
+
 def run_rollout_worker(
     worker_id: str,
     task_queue,
@@ -329,7 +357,9 @@ def run_rollout_worker(
                 # 但保留此逻辑以兼容原有的 OSWorld 环境
                 if env_has_heavy_resource:
                     logger.info(f"[worker {worker_id}] requesting resource from manager")
-                    if not allocate_fn or not allocate_fn(worker_id):
+                    # 获取活动资源配置
+                    active_resource_configs = get_active_resource_configs(environment, task)
+                    if not allocate_fn(worker_id, active_resource_configs):
                         raise RuntimeError("Failed to allocate resource from pool")
                     resource_allocated = True
                     
@@ -400,24 +430,7 @@ def run_rollout_worker(
         # Worker 退出清理
         if worker_instance_map is not None:
             worker_instance_map.pop(worker_id, None)
-        if worker_instance_events is not None:
-            worker_instance_events.append({
-                "timestamp": datetime.now().isoformat(),
-                "worker_id": worker_id,
-                "instance_id": None,
-                "task_id": None,
-                "action": "worker_exit",
-            })
-
-        if environment:
-            try:
-                cleanup_fn = getattr(environment, "cleanup", None)
-                if callable(cleanup_fn):
-                    cleanup_fn(worker_id)
-                else:
-                    environment.env_close()
-            except Exception as e:
-                logger.error(f"Cleanup failed: {e}")
+        logger.info(f"Worker {worker_id} stopped")
 
 
 if __name__ == "__main__":

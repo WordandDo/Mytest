@@ -38,7 +38,7 @@ def _get_controller(worker_id: str) -> PythonController:
 
 @ToolRegistry.register_tool("computer_lifecycle")  # [新增注册]
 @mcp.tool()
-async def setup_vm_session(config_name: str, task_id: str, worker_id: str) -> str:
+async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_script: str = "") -> str:
     """初始化 VM 会话：申请 VM 资源并初始化控制器。
     (原名 setup_environment，已重命名以消除歧义)
     """
@@ -82,6 +82,32 @@ async def setup_vm_session(config_name: str, task_id: str, worker_id: str) -> st
             "task_id": task_id
         }
         
+        # 处理初始化脚本
+        if init_script:
+            # 判断是否是JSON格式的任务规范
+            if init_script.strip().startswith("{"):
+                # Case A: 传入的是 OSWorld 任务规范 (JSON)
+                try:
+                    task_spec = json.loads(init_script)
+                    setup_steps = task_spec.get("config", [])
+                    evaluator = task_spec.get("evaluator", {})
+                    
+                    # 执行 config 中的每一步 (download, execute 等)
+                    if setup_steps:
+                        execute_setup_steps(controller, setup_steps)
+                    
+                    # 将 evaluator 缓存到 GLOBAL_SESSIONS 中供后续 evaluate_task 使用
+                    GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
+                    
+                except json.JSONDecodeError as e:
+                    return json.dumps({"status": "error", "message": f"Invalid JSON in init_script: {e}"})
+            else:
+                # Case B: 传入的是纯 Python 脚本 (如 Math/Web 任务)
+                try:
+                    controller.execute_python_command(init_script)
+                except Exception as e:
+                    return json.dumps({"status": "error", "message": f"Failed to execute init_script: {e}"})
+        
         # 获取初始状态
         screenshot = controller.get_screenshot()
         screenshot_b64 = base64.b64encode(screenshot).decode('utf-8') if screenshot else ""
@@ -115,6 +141,24 @@ async def teardown_environment(worker_id: str) -> str:
 @ToolRegistry.register_tool("computer_lifecycle") # [新增注册] 归类为生命周期或评估
 @mcp.tool()
 async def evaluate_task(worker_id: str) -> str:
+    """评估任务执行结果"""
+    session = GLOBAL_SESSIONS.get(worker_id)
+    
+    # 检查session是否存在以及是否有evaluator配置
+    if not session or not session.get("evaluator"):
+        # 安全返回，避免Crash
+        return "0.0"
+    
+    # 获取评估器配置
+    evaluator_config = session.get("evaluator", {})
+    if not evaluator_config or not isinstance(evaluator_config, dict):
+        return "0.0"
+    
+    # TODO: 实现具体的评估逻辑
+    # 这里应该根据evaluator_config中的配置执行相应的评估函数
+    # 例如调用check_include_exclude等评估方法
+    
+    # 临时返回默认分数
     return "0.0"
 
 # --- 观察工具 (Group: desktop_observation) ---

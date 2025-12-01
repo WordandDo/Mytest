@@ -66,3 +66,4 @@ def prepare_2wiki(
 
 if __name__ == "__main__":
     corpus_data, query_answer_data = prepare_2wiki()
+
