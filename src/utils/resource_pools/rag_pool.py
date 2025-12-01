@@ -144,6 +144,23 @@ class RAGPoolImpl(AbstractPoolManager):
     def _stop_resource(self, entry: ResourceEntry) -> None:
         pass
 
+    # [新增] 可选实现
+    def get_observation(self, resource_id: str) -> Optional[Dict[str, Any]]:
+        with self.pool_lock:
+            entry = self.pool.get(resource_id)
+            if not entry or not self.rag_index_instance:
+                return None
+            
+            # 返回元数据作为初始状态
+            return {
+                "status": "ready",
+                "message": "RAG Knowledge Base ready.",
+                "index_info": {
+                    "total_chunks": len(self.rag_index_instance.chunks),
+                    "model": self.model_name
+                }
+            }
+
     # [新增/修改] 处理查询的核心方法
     def process_query(self, resource_id: str, worker_id: str, query: str, top_k: Optional[int] = None) -> str:
         # 1. 验证资源所有权 (逻辑保持不变)

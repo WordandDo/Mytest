@@ -107,6 +107,10 @@ class ReleaseReq(BaseModel):
     resource_id: str
     worker_id: str
 
+# [新增] 请求模型
+class GetObsReq(BaseModel):
+    worker_id: str
+
 # [修改] 将top_k改为Optional，默认为None，表示"使用服务器配置的默认值"
 class RAGQueryReq(BaseModel):
     resource_id: str
@@ -166,6 +170,25 @@ def query_rag_service(req: RAGQueryReq):
 @app.get("/status")
 def get_status():
     return manager.get_status()
+
+# [新增] 获取初始观测数据的 API
+@app.post("/get_initial_observations")
+def get_initial_observations_endpoint(req: GetObsReq):
+    try:
+        if not manager:
+             raise HTTPException(status_code=503, detail="Resource Manager not initialized")
+             
+        # Log
+        logger.info(f"👁️ [GetObs] Worker={req.worker_id} requesting initial observations")
+        
+        # 调用 Manager 获取数据
+        results = manager.get_initial_observations(req.worker_id)
+        
+        return {"status": "success", "observations": results}
+    except Exception as e:
+        logger.error(f"❌ [GetObs] Error: {e}", exc_info=True)
+        # 失败时返回空字典，保证健壮性
+        return {"status": "error", "message": str(e), "observations": {}}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

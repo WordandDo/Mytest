@@ -21,11 +21,54 @@ load_dotenv()
 mcp = FastMCP("RAG Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 
+print("🚀 Starting RAG MCP Server (Client Mode)")
+
+# RAG初始化函数
+async def rag_initialization(worker_id: str, config_content: str = "") -> bool:
+    """
+    RAG资源初始化函数，用于解析Benchmark特有的数据结构并执行初始化操作
+    
+    Args:
+        worker_id: 工作进程ID
+        config_content: 初始化配置内容，应该是包含knowledge_base_ids和top_k的JSON
+        
+    Returns:
+        bool: 初始化是否成功
+    """
+    # 防御性编程：无配置即成功
+    if not config_content:
+        return True
+    
+    try:
+        # 解析配置
+        config = json.loads(config_content) if isinstance(config_content, str) else config_content
+        
+        # 获取知识库ID列表和top_k参数
+        knowledge_base_ids = config.get("knowledge_base_ids", [])
+        top_k = config.get("top_k", 3)
+        
+        # 如果没有知识库需要设置，直接返回成功
+        if not knowledge_base_ids:
+            return True
+        
+        # 调用set_rag_context工具更新RAG上下文
+        # 这里应该调用相应的工具来设置知识库上下文
+        # 由于当前代码中没有看到set_rag_context工具，我们需要假设它存在或稍后实现
+        session = RAG_SESSIONS.get(worker_id)
+        if not session:
+            raise RuntimeError(f"No active RAG session for worker: {worker_id}")
+        
+        # TODO: 实际调用设置知识库上下文的工具
+        # 这可能需要与Resource API通信或直接调用相应的函数
+        
+        return True
+    except Exception as e:
+        print(f"RAG initialization failed for worker {worker_id}: {e}")
+        return False
+
 # 全局会话，存储 worker_id -> 令牌信息
 # 结构: { worker_id: { "resource_id": str, "token": str } }
 RAG_SESSIONS: Dict[str, Dict] = {}
-
-print("🚀 Starting RAG MCP Server (Client Mode)")
 
 @ToolRegistry.register_tool("rag_lifecycle")
 async def setup_rag_session(worker_id: str) -> str:

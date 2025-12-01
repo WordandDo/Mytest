@@ -253,6 +253,56 @@ class HttpMCPEnv(Environment):
         error_msg = data.get("error", "Unknown error")
         logger.warning(f"Worker [{worker_id}] failed to allocate {res_type} (attempt {attempt+1}): {error_msg}")
 
+    def _setup_single_resource(self, res_type: str, res_data: dict):
+        self.allocated_resources[res_type] = res_data
+        
+        if res_type == "vm":
+            self.vm_ip = res_data.get("ip")
+            self.vm_port = res_data.get("port")
+            
+        elif res_type == "rag":
+            self.rag_endpoint = res_data.get("endpoint")
+            # ... 其他 RAG 初始化 ...
+
+    # [新增] 获取初始观测的主入口
+    def get_inital_obs(self) -> Dict[str, Any]:
+        """
+        调用系统工具 'get_batch_initial_observations' 获取所有资源的初始状态。
+        """
+        logger.info(f"[{self.worker_id}] Fetching batch initial observations from MCP...")
+        
+        combined_obs = {
+            "vm": None,
+            "rag": None,
+            "raw_response": {}
+        }
+
+        try:
+            # 1. 调用 MCP 工具
+            res = self._call_tool_sync("get_batch_initial_observations", {"worker_id": self.worker_id})
+            data = self._parse_mcp_response(res)
+            combined_obs["raw_response"] = data
+
+            if isinstance(data, dict) and "error" not in data:
+                # 2. 兼容处理：更新 VM 数据到 self.initial_observation
+                if "vm" in data and data["vm"]:
+                    combined_obs["vm"] = data["vm"]
+                    self.initial_observation = data["vm"]
+                    logger.info(f"[{self.worker_id}] Initial VM observation updated.")
+                
+                # 3. 提取 RAG 数据
+                if "rag" in data:
+                    combined_obs["rag"] = data["rag"]
+            else:
+                logger.warning(f"[{self.worker_id}] Failed to fetch obs: {data.get('error')}")
+
+            return combined_obs
+
+        except Exception as e:
+            logger.error(f"[{self.worker_id}] Exception in get_inital_obs: {e}")
+            return combined_obs
+
+    # [修改] allocate_resource：删除获取 obs 的旧逻辑
     def allocate_resource(self, worker_id: str, resource_init_data: Optional[Dict[str, Any]] = None) -> bool:
         """
         [核心重构] 动态事务性资源分配：
@@ -266,7 +316,7 @@ class HttpMCPEnv(Environment):
         resource_init_data = resource_init_data or {}
         logger.info(f"Worker [{worker_id}] requesting resources: {self.active_resources}...")
         
-        # [新增] 清空上一轮的观察
+        # [修改] 清空上一轮的观察
         self.initial_observation = None
         
         # 如果有多种资源需要申请，尝试使用原子化申请
@@ -321,12 +371,7 @@ class HttpMCPEnv(Environment):
                         all_success = False
                         break
                     
-                    # [新增] 如果是 VM 资源，提取并保存 observation
-                    if res_type == "vm" and "observation" in data:
-                        self.initial_observation = data["observation"]
-                        logger.info(f"[{worker_id}] Captured initial VM observation.")
-                        
-                    # [新增] 保存资源信息
+                    # [修改] 保存资源信息
                     self.allocated_resources[res_type] = data
 
                     # 成功：压入栈
@@ -400,21 +445,29 @@ class HttpMCPEnv(Environment):
             logger.error(f"Failed to allocate resources atomically via MCP: {e}")
             return False
 
-    def _setup_single_resource(self, res_type: str, res_data: dict):
-        """辅助方法：配置单个资源到环境"""
-        self.allocated_resources[res_type] = res_data
+    def _setup_resources_logic(self, worker_id: str, init_data: Dict[str, Any]) -> bool:
+        """
+        设置资源初始化逻辑
         
-        if res_type == "vm":
-            # 设置 VM 连接信息
-            self.vm_ip = res_data.get("ip")
-            self.vm_port = res_data.get("port")
-            # 如果有观察数据，保存它
-            if "observation" in res_data:
-                self.initial_observation = res_data["observation"]
-        elif res_type == "rag":
-            # 设置 RAG 连接信息
-            self.rag_endpoint = res_data.get("endpoint")
-            # ... 其他 RAG 初始化 ...
+        Args:
+            worker_id: 工作进程ID
+            init_data: 初始化数据
+            
+        Returns:
+            bool: 设置是否成功
+        """
+        # 极简调用，不再解析 JSON
+        try:
+            res = self._call_tool_sync("setup_batch_resources", {
+                "worker_id": worker_id, 
+                "resource_init_configs": init_data
+            })
+            
+            data = self._parse_mcp_response(res)
+            return data.get("status") == "success"
+        except Exception as e:
+            logger.error(f"Failed to setup resources for worker {worker_id}: {e}")
+            return False
 
     def release_resource(self, worker_id: str, reset: bool = True) -> None:
         """

@@ -27,6 +27,57 @@ print(f"🚀 Starting OSWorld MCP Server (Registry Mode)")
 # [关键修改] 全局会话字典，Key 为 worker_id
 GLOBAL_SESSIONS = {}
 
+# [新增] VM初始化函数
+async def vm_initialization(worker_id: str, config_content: str = "") -> bool:
+    """
+    VM资源初始化函数，用于解析Benchmark特有的数据结构并执行初始化操作
+    
+    Args:
+        worker_id: 工作进程ID
+        config_content: 初始化配置内容，可能是JSON格式或纯脚本
+        
+    Returns:
+        bool: 初始化是否成功
+    """
+    # 防御性编程：无配置即成功
+    if not config_content:
+        return True
+    
+    try:
+        session = GLOBAL_SESSIONS.get(worker_id)
+        if not session or not session.get("controller"):
+            # Session未找到，尝试调用setup_vm_task工具
+            return await setup_vm_task(worker_id=worker_id, init_config=config_content)
+        
+        controller = session["controller"]
+        
+        # 判断是否是JSON格式的任务规范
+        if config_content.strip().startswith("{"):
+            # Case A: 传入的是 OSWorld 任务规范 (JSON)
+            try:
+                task_spec = json.loads(config_content)
+                setup_steps = task_spec.get("config", [])
+                evaluator = task_spec.get("evaluator", {})
+                
+                # 执行 config 中的每一步 (download, execute 等)
+                if setup_steps:
+                    from src.utils.desktop_env.controllers.setup import execute_setup_steps
+                    execute_setup_steps(controller, setup_steps)
+                
+                # 将 evaluator 缓存到 GLOBAL_SESSIONS 中供后续 evaluate_task 使用
+                GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
+                
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"Invalid JSON in init_script: {e}")
+        else:
+            # Case B: 传入的是纯 Python 脚本 (如 Math/Web 任务)
+            controller.execute_python_command(config_content)
+            
+        return True
+    except Exception as e:
+        print(f"VM initialization failed for worker {worker_id}: {e}")
+        return False
+
 def _get_controller(worker_id: str) -> PythonController:
     session = GLOBAL_SESSIONS.get(worker_id)
     if not session or not session.get("controller"):

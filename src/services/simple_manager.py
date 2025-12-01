@@ -151,6 +151,35 @@ class GenericResourceManager:  # [建议重命名类，或保留原名]
         """动态聚合状态"""
         return {name: pool.get_stats() for name, pool in self.pools.items()}
     
+    # [新增] 聚合观测数据的方法
+    def get_initial_observations(self, worker_id: str) -> Dict[str, Any]:
+        """
+        遍历所有 Pool，收集该 Worker 名下所有资源的 Observation。
+        """
+        results = {}
+        # self.pools 是根据 deployment_config.json 初始化生成的
+        for res_type, pool in self.pools.items():
+            found_entry = None
+            
+            # 1. 查找 Worker 拥有的资源 ID
+            with pool.pool_lock:
+                for entry in pool.pool.values():
+                    if entry.allocated_to == worker_id:
+                        found_entry = entry
+                        break
+            
+            # 2. 获取观测数据 (如果没找到资源，默认为 None)
+            obs = None
+            if found_entry:
+                try:
+                    obs = pool.get_observation(found_entry.resource_id)
+                except Exception as e:
+                    logger.error(f"Error getting observation for {res_type}: {e}")
+            
+            results[res_type] = obs
+            
+        return results
+
     # [修改] top_k 类型改为 Optional[int] = None
     def query_rag(self, resource_id: str, worker_id: str, query: str, top_k: Optional[int] = None) -> str:
         # RAG 特有方法的特殊处理

@@ -193,3 +193,11 @@ class AbstractPoolManager(ABC):
             stats = self.stats.copy()
             stats["statuses"] = {rid: entry.status.value for rid, entry in self.pool.items()}
             return stats
+
+    # [新增] 获取资源的观测数据接口
+    def get_observation(self, resource_id: str) -> Optional[Any]:
+        """
+        尝试获取资源的当前观测数据。
+        默认返回 None，子类可覆盖此方法以提供具体实现 (如 VM 截图)。
+        """
+        return None
