@@ -5,6 +5,7 @@ import json
 import logging
 import asyncio
 import time
+import requests
 from typing import Dict, Any, Union, Optional, List, Tuple
 from tools.tool import Tool
 
@@ -79,6 +80,12 @@ class HttpMCPEnv(Environment):
         
         # [新增] 初始化变量，用于保存初始观察数据
         self.initial_observation = None
+        
+        # [新增] 保存已分配的资源信息
+        self.allocated_resources = {}
+        
+        # [新增] 标记是否已初始化工具
+        self._tools_initialized = False
 
         logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url}")
         logger.info(f"Active Resources from Config: {self.active_resources}")
@@ -112,6 +119,11 @@ class HttpMCPEnv(Environment):
         根据配置动态生成工具 Schema 和描述。
         自动将生命周期管理工具加入黑名单，不暴露给 Agent。
         """
+        # [修改] 如果还没有建立连接，则不执行工具初始化
+        if not self._tools_initialized:
+            logger.info(f"[{self.worker_id}] Skipping tool initialization before connection is established")
+            return
+            
         try:
             logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
             mcp_tools = self._list_tools_sync()
@@ -183,8 +195,53 @@ class HttpMCPEnv(Environment):
         logger.info(f"Worker [{self.worker_id}] started (Config-Driven Mode)")
         # 建立长连接
         self._run_sync(self.mcp_client.connect())
+        # 标记工具可以初始化
+        self._tools_initialized = True
+        # 获取工具信息
+        self._initialize_tools()
 
-    def allocate_resource(self, worker_id: str, resource_init_data: Dict[str, Any] = None) -> bool:
+    # 需要添加到 HttpMCPEnv 类中
+    def _run_sync(self, awaitable):
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(awaitable)
+        finally:
+            loop.close()
+
+    def _list_tools_sync(self):
+        return self._run_sync(self.mcp_client.list_tools())
+
+    def _call_tool_sync(self, name, arguments):
+        return self._run_sync(self.mcp_client.call_tool(name, arguments))
+
+    def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:
+        """解析MCP响应结果"""
+        try:
+            if response.content and len(response.content) > 0:
+                # 检查内容类型并提取文本
+                content_item = response.content[0]
+                if hasattr(content_item, 'text'):
+                    text_content = content_item.text
+                elif hasattr(content_item, '__dict__') and 'text' in content_item.__dict__:
+                    text_content = content_item.__dict__['text']
+                else:
+                    text_content = str(content_item)
+                    
+                if text_content:
+                    return json.loads(text_content)
+            return {"status": "unknown"}
+        except Exception as e:
+            logger.error(f"Failed to parse MCP response: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def _log_alloc_failure(self, worker_id: str, res_type: str, data: Dict[str, Any], attempt: int):
+        """记录资源分配失败日志"""
+        error_msg = data.get("error", "Unknown error")
+        logger.warning(f"Worker [{worker_id}] failed to allocate {res_type} (attempt {attempt+1}): {error_msg}")
+
+    def allocate_resource(self, worker_id: str, resource_init_data: Optional[Dict[str, Any]] = None) -> bool:
         """
         [核心重构] 动态事务性资源分配：
         遍历配置中的 active_resources，依次申请资源。
@@ -200,6 +257,11 @@ class HttpMCPEnv(Environment):
         # [新增] 清空上一轮的观察
         self.initial_observation = None
         
+        # 如果有多种资源需要申请，尝试使用原子化申请
+        if len(self.active_resources) > 1:
+            return self._allocate_resources_atomically(resource_init_data)
+        
+        # 否则使用原有的逐个申请方式
         retry_interval = 5
         max_retries = 100 
         
@@ -251,6 +313,9 @@ class HttpMCPEnv(Environment):
                     if res_type == "vm" and "observation" in data:
                         self.initial_observation = data["observation"]
                         logger.info(f"[{worker_id}] Captured initial VM observation.")
+                        
+                    # [新增] 保存资源信息
+                    self.allocated_resources[res_type] = data
 
                     # 成功：压入栈
                     allocated_stack.append(res_type)
@@ -282,6 +347,54 @@ class HttpMCPEnv(Environment):
         logger.error(f"Worker [{worker_id}] failed to acquire all resources after {max_retries} attempts.")
         return False
 
+    def _allocate_resources_atomically(self, resource_init_data: Dict[str, Any]) -> bool:
+        """
+        使用原子化方式申请资源（通过资源管理API）
+        """
+        try:
+            # 获取资源管理API的URL
+            resource_api_url = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
+            
+            # 构造请求 Payload
+            payload = {
+                "worker_id": self.worker_id,
+                "timeout": 600,
+                # 传入列表，触发后端的 allocate_atomic
+                "resource_types": self.active_resources
+            }
+            
+            # 发送请求
+            resp = requests.post(f"{resource_api_url}/allocate", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # 处理响应
+            # 原子申请返回的是字典: {"vm": resource_data, "rag": resource_data}
+            for r_type, r_data in data.items():
+                self._setup_single_resource(r_type, r_data)
+            
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to allocate resources atomically {self.active_resources}: {e}")
+            return False
+
+    def _setup_single_resource(self, res_type: str, res_data: dict):
+        """辅助方法：配置单个资源到环境"""
+        self.allocated_resources[res_type] = res_data
+        
+        if res_type == "vm":
+            # 设置 VM 连接信息
+            self.vm_ip = res_data.get("ip")
+            self.vm_port = res_data.get("port")
+            # 如果有观察数据，保存它
+            if "observation" in res_data:
+                self.initial_observation = res_data["observation"]
+        elif res_type == "rag":
+            # 设置 RAG 连接信息
+            self.rag_endpoint = res_data.get("endpoint")
+            # ... 其他 RAG 初始化 ...
+
     def release_resource(self, worker_id: str, reset: bool = True) -> None:
         """
         释放所有资源 (逆序释放)
@@ -298,129 +411,4 @@ class HttpMCPEnv(Environment):
                     logger.warning(f"{res_type} Release failed: {e}")
 
     def get_allocated_resource_id(self) -> str:
-        return self.worker_id 
-
-    # =========================================================================
-    # 3. 辅助方法与底层通信 (重构)
-    # =========================================================================
-
-    def _parse_mcp_response(self, res: Any) -> Dict[str, Any]:
-        if isinstance(res, str):
-            try: return json.loads(res)
-            except: return {"status": "error", "message": res}
-        return res if isinstance(res, dict) else {}
-
-    def _log_alloc_failure(self, worker_id, res_type, status, attempt):
-        msg = status.get("message", "")
-        # 减少刷屏
-        if ("No resources" in msg or "exhausted" in msg or "busy" in msg) and attempt % 5 != 0:
-            return
-        if "No resources" in msg or "exhausted" in msg or "busy" in msg:
-             logger.info(f"Pool full ({res_type}), Worker [{worker_id}] waiting...")
-        else:
-             logger.warning(f"Worker [{worker_id}] {res_type} alloc error: {msg}")
-
-    def execute_tool(self, tool_name: str, params: Union[str, dict], **kwargs) -> Any:
-        """
-        [修改] 执行工具并应用多模态处理
-        返回标准结构: {"text": str, "images": List[str]}
-        """
-        if isinstance(params, str):
-            try: params = json.loads(params)
-            except: params = {"arg": params}
-        try:
-            # 2. 调用 MCP 工具 (获取原始结果，通常是包含截图的 JSON 字符串)
-            raw_result = self._call_tool_sync(tool_name, params)
-            
-            # 3. [新增] 调用多模态处理逻辑
-            structured_result = self._process_multimodal_response(raw_result)
-            return structured_result
-            
-        except Exception as e:
-            logger.error(f"Execute tool {tool_name} error: {e}")
-            # 出错时返回标准错误结构
-            return {
-                "text": json.dumps({"status": "error", "message": str(e)}),
-                "images": []
-            }
-
-    def _process_multimodal_response(self, raw_response: Any) -> Dict[str, Any]:
-        """
-        [新增] 数据清洗与分离函数
-        功能：
-        1. 解析 JSON 字符串。
-        2. 提取 'screenshot' 字段中的 Base64 图片。
-        3. 将图片分离，避免其进入 Text Context。
-        """
-        # 默认返回值
-        processed = {"text": str(raw_response), "images": []}
-        
-        # 尝试解析 JSON
-        try:
-            data = raw_response
-            if isinstance(data, str):
-                # 快速检查是否像 JSON，避免不必要的解析
-                if not (data.strip().startswith("{") or data.strip().startswith("[")):
-                    return processed
-                data = json.loads(data)
-            
-            if not isinstance(data, dict):
-                return processed
-
-            # --- 提取图片逻辑 (适配 OSWorld 格式) ---
-            # 目标结构通常是: {"status": "...", "observation": {"screenshot": "...", ...}}
-            # 或者直接: {"screenshot": "...", ...}
-            
-            images = []
-            
-            # 递归或直接查找 screenshot 字段并移除它
-            # 策略：为了保持原始数据的纯净，我们先复制一份
-            # 注意：这里为了性能做了简化处理，主要针对 OSWorld 的结构
-            
-            # Case 1: 在 observation 内部
-            if "observation" in data and isinstance(data["observation"], dict):
-                obs = data["observation"]
-                if "screenshot" in obs and obs["screenshot"]:
-                    images.append(obs.pop("screenshot")) # 提取并从原字典中删除
-            
-            # Case 2: 在顶层
-            elif "screenshot" in data and data["screenshot"]:
-                images.append(data.pop("screenshot")) # 提取并从原字典中删除
-
-            # 更新返回值
-            # data 现在是移除了图片的"干净"字典，适合转为文本给 Tool Message
-            processed["text"] = json.dumps(data, ensure_ascii=False)
-            processed["images"] = images
-            
-            return processed
-
-        except Exception as e:
-            # 解析失败则回退到原始文本
-            logger.warning(f"Failed to process multimodal response: {e}")
-            return {"text": str(raw_response), "images": []}
-
-    def _run_sync(self, coro):
-        """统一的异步转同步辅助函数"""
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
-
-    def _call_tool_sync(self, tool_name: str, args: Dict[str, Any]) -> Any:
-        return self._run_sync(self._call_tool_wrapper(tool_name, args))
-
-    async def _call_tool_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Any:
-        tool_args = args.copy()
-        tool_args["worker_id"] = self.worker_id
-        return await self.mcp_client.call_tool(tool_name, tool_args)
-
-    def _list_tools_sync(self):
-        return self._run_sync(self._list_tools_wrapper())
-
-    async def _list_tools_wrapper(self):
-        return await self.mcp_client.list_tools()
-
-    def env_close(self):
-        self.release_resource(self.worker_id)
+        return self.worker_id

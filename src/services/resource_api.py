@@ -7,7 +7,7 @@ import asyncio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Optional, Dict, Any  # 确保导入 Optional
+from typing import Optional, Dict, Any, List  # 确保导入 List
 import logging
 import uvicorn
 
@@ -95,11 +95,13 @@ async def monitor_resource_usage():
             logger.error(f"Monitor error: {e}")
         await asyncio.sleep(30)
 
-# [修改] 请求模型增加 resource_type
+# [修改] 更新 AllocReq 模型，增加 resource_types 字段
 class AllocReq(BaseModel):
     worker_id: str
     timeout: float = 60.0
     type: str = "vm"  # 默认为 vm，兼容旧代码
+    # [新增] 可选的资源类型列表
+    resource_types: Optional[List[str]] = None
 
 class ReleaseReq(BaseModel):
     resource_id: str
@@ -116,12 +118,19 @@ class RAGQueryReq(BaseModel):
 @app.post("/allocate")
 def allocate_resource(req: AllocReq):
     try:
-        # GenericResourceManager.allocate 签名支持 resource_type
-        res = manager.allocate(req.worker_id, req.timeout, resource_type=req.type)
-        return res
+        # [新增] 优先检查是否有批量申请需求
+        if req.resource_types and len(req.resource_types) > 0:
+            # 调用原子申请接口
+            # 返回格式形如: {"vm": {...}, "rag": {...}}
+            return manager.allocate_atomic(req.worker_id, req.resource_types, req.timeout)
+        else:
+            # [兼容] 走旧的单资源申请路径
+            # 返回格式形如: {...} (单个资源信息)
+            return manager.allocate(req.worker_id, req.timeout, resource_type=req.type)
+            
     except Exception as e:
         logger.error(f"Allocation failed: {e}")
-        if "No resources available" in str(e) or "Pool for type" in str(e):
+        if "No resources available" in str(e) or "timeout" in str(e).lower():
              raise HTTPException(status_code=503, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 

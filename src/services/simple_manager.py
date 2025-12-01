@@ -1,10 +1,11 @@
 # src/services/simple_manager.py
 import logging
 import time
-from typing import Dict, Any, Optional
+import random
+from typing import Dict, Any, Optional, List
 from utils.instance_tracker import get_instance_tracker
 from utils.resource_pools.base import ResourceStatus
-from utils.resource_pools.factory import ResourcePoolFactory  # [新增导入]
+from utils.resource_pools.factory import ResourcePoolFactory
 
 logger = logging.getLogger(__name__)
 
@@ -53,41 +54,69 @@ class GenericResourceManager:  # [建议重命名类，或保留原名]
 
         return all_success
 
-    def allocate(self, worker_id: str, timeout: float = 60.0, resource_type: str = "vm") -> Dict[str, Any]:
-        """通用申请资源逻辑"""
-        # [修改] 动态查找 Pool
-        pool = self.pools.get(resource_type)
-        if not pool:
-            available = list(self.pools.keys())
-            raise RuntimeError(f"Resource type '{resource_type}' not found or not initialized. Available: {available}")
+    def allocate_atomic(self, worker_id: str, resource_types: List[str], timeout: float = 600.0) -> Dict[str, Any]:
+        """
+        原子化申请多种资源。要么全部成功，要么全部失败并重试。
+        避免 Worker A 占有 VM 等 RAG，而 Worker B 占有 RAG 等 VM 的死锁情况。
+        """
+        # 去重并校验资源池是否存在
+        req_types = list(set(resource_types))
+        for r_type in req_types:
+            if r_type not in self.pools:
+                 raise RuntimeError(f"Resource type '{r_type}' not initialized.")
 
-        # 1. 幂等性检查
-        with pool.pool_lock:
-            for entry in pool.pool.values():
-                if entry.allocated_to == worker_id and entry.status == ResourceStatus.OCCUPIED:
-                    logger.info(f"Worker [{worker_id}] already owns {resource_type} {entry.resource_id}. Returning cached info.")
-                    return pool._get_connection_info(entry)
-
-        logger.info(f"Worker [{worker_id}] requesting {resource_type} resource...")
+        logger.info(f"Worker [{worker_id}] atomic requesting: {req_types}")
         
-        # 2. 轮询等待机制
         start_time = time.time()
         while True:
-            try:
-                resource = pool.allocate(worker_id, timeout=1.0)
-                if resource:
-                    # 记录追踪
-                    self.tracker.record_instance_task(resource['id'], worker_id)
-                    logger.info(f"Allocated {resource_type} {resource['id']} to {worker_id}")
-                    return resource
-            except Exception as e:
-                logger.error(f"Unexpected error during allocation: {e}")
+            allocated_batch = {}
+            success = True
             
-            if time.time() - start_time > timeout:
-                break
-            time.sleep(1.0)
+            # 1. 尝试按顺序申请所有资源
+            # 注意：这里使用非阻塞或短超时尝试
+            for r_type in req_types:
+                pool = self.pools[r_type]
+                
+                try:
+                    # 尝试快速获取，不等待
+                    resource = pool.allocate(worker_id, timeout=0.1)
+                    if resource:
+                        allocated_batch[r_type] = resource
+                    else:
+                        success = False
+                        break
+                except Exception as e:
+                    logger.error(f"Error checking {r_type}: {e}")
+                    success = False
+                    break
+            
+            # 2. 判断结果
+            if success:
+                # 全部申请成功
+                for r_type, res in allocated_batch.items():
+                    self.tracker.record_instance_task(res['id'], worker_id)
+                logger.info(f"✅ Worker [{worker_id}] 原子申请成功: {[r['id'] for r in allocated_batch.values()]}")
+                return allocated_batch
+            else:
+                # 3. 失败回滚：释放本次循环中已获取的部分资源
+                if allocated_batch:
+                    logger.debug(f"Worker [{worker_id}] 原子申请部分失败，回滚释放: {list(allocated_batch.keys())}")
+                    for r_type, res in allocated_batch.items():
+                        pool = self.pools[r_type]
+                        # reset=False 很重要，避免频繁重置虚拟机导致性能下降，仅释放锁即可
+                        pool.release(res['id'], worker_id, reset=False)
+                
+                # 4. 超时检查
+                if time.time() - start_time > timeout:
+                    raise RuntimeError(f"Atomic allocation timeout for {req_types} after {timeout}s")
+                
+                # 5. 随机避退，减少竞争冲突
+                time.sleep(random.uniform(1.0, 3.0))
 
-        raise RuntimeError(f"No {resource_type} resources available for {worker_id} after {timeout}s")
+    def allocate(self, worker_id: str, timeout: float = 60.0, resource_type: str = "vm") -> Dict[str, Any]:
+        """通用申请资源逻辑（单资源，兼容旧接口）"""
+        res_map = self.allocate_atomic(worker_id, [resource_type], timeout)
+        return res_map[resource_type]
 
     def release(self, resource_id: str, worker_id: str) -> None:
         """通用释放逻辑：遍历所有池尝试释放"""
@@ -101,6 +130,12 @@ class GenericResourceManager:  # [建议重命名类，或保留原名]
         
         if not released:
             logger.warning(f"Could not release {resource_id} (not found or not owned by {worker_id})")
+
+    def release_batch(self, resources: Dict[str, Any], worker_id: str) -> None:
+        """批量释放由 allocate_atomic 分配的资源"""
+        for r_type, res in resources.items():
+            if isinstance(res, dict) and 'id' in res:
+                self.release(res['id'], worker_id)
 
     def get_status(self) -> Dict[str, Any]:
         """动态聚合状态"""
