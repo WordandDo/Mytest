@@ -226,7 +226,19 @@ class HttpMCPEnv(Environment):
         if isinstance(arguments, dict) and "worker_id" not in arguments:
             arguments["worker_id"] = self.worker_id
             
-        return self._run_sync(self.mcp_client.call_tool(name, arguments))
+        # === [新增日志 START] ===
+        logger.info(f"[{self.worker_id}] ⏳ Sync Calling: {name}...")
+        start_time = time.time()
+        # === [新增日志 END] ===
+
+        res = self._run_sync(self.mcp_client.call_tool(name, arguments))
+
+        # === [新增日志 START] ===
+        duration = time.time() - start_time
+        logger.info(f"[{self.worker_id}] ✅ Sync Call Done: {name} (Took {duration:.2f}s)")
+        # === [新增日志 END] ===
+
+        return res
 
     def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:
         """解析MCP响应结果"""
@@ -315,6 +327,10 @@ class HttpMCPEnv(Environment):
         """
         resource_init_data = resource_init_data or {}
         logger.info(f"Worker [{worker_id}] requesting resources: {self.active_resources}...")
+        
+        # === [新增日志 START] ===
+        logger.info(f"[{worker_id}] Resource Init Data Keys: {list(resource_init_data.keys()) if resource_init_data else 'None'}")
+        # === [新增日志 END] ===
         
         # [修改] 清空上一轮的观察
         self.initial_observation = None

@@ -347,6 +347,14 @@ def run_rollout_worker(
             current_resource_id = None
             task_start_time = time.time()
             logger.info(f"▶️ Worker {worker_id} START Task {task_id}")
+            
+            # === [新增日志 START] ===
+            # 打印任务的核心问题和配置，确认 metadata 传递正确
+            q_text = task.get("question", "")
+            logger.info(f"   [Task Info] Question: {q_text[:100]}...") 
+            logger.info(f"   [Task Info] Metadata: {json.dumps(task.get('metadata', {}), ensure_ascii=False)}")
+            # === [新增日志 END] ===
+
             try:
                 # 补充 metadata
                 if "metadata" not in task or not isinstance(task.get("metadata"), dict):

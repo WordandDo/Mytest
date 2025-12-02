@@ -1,6 +1,7 @@
 # src/utils/mcp_sse_client.py
 import asyncio
 from contextlib import AsyncExitStack
+import json
 from typing import Optional, Dict, Any, List
 
 # 引入 MCP SDK 的 SSE 客户端
@@ -66,8 +67,27 @@ class MCPSSEClient:
         if arguments is None:
             arguments = {}
 
+        # === [新增日志 START] ===
+        # 打印请求详情 (截断过长的参数，如 init_script)
+        debug_args = arguments.copy()
+        for k, v in debug_args.items():
+            if isinstance(v, str) and len(v) > 200:
+                debug_args[k] = v[:200] + "...(truncated)"
+        print(f"\n[MCP-CLI] ➡️ REQ Tool: {name}")
+        print(f"[MCP-CLI]    Args: {json.dumps(debug_args, ensure_ascii=False)}")
+        # === [新增日志 END] ===
+
         # 发送 CallToolRequest
         result: CallToolResult = await self.session.call_tool(name, arguments)
+        
+        # === [新增日志 START] ===
+        # 打印响应摘要
+        content_summary = "Empty"
+        if result.content:
+            content_summary = str(result.content)[:500] # 限制日志长度
+        print(f"[MCP-CLI] ⬅️ RES Tool: {name}")
+        print(f"[MCP-CLI]    Data: {content_summary}\n")
+        # === [新增日志 END] ===
         
         # 解析结果 (MCP 可以返回 Text 或 Image)
         output_parts = []

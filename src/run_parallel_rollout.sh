@@ -18,7 +18,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 # =================================================================
 echo "🧹 [1/3] Cleaning up ports $RESOURCE_PORT and $GATEWAY_PORT..."
 
-# 使用 fuser 杀掉占用端口的进程 (如果是 MacOS 请改用 lsof -i :port | awk 'NR!=1 {print $2}' | xargs kill)
+# 使用 fuser 杀掉占用端口的进程
 fuser -k $RESOURCE_PORT/tcp > /dev/null 2>&1
 fuser -k $GATEWAY_PORT/tcp > /dev/null 2>&1
 
@@ -32,6 +32,7 @@ echo "   - Ports cleared."
 echo "🚀 [2/3] Starting Resource API on port $RESOURCE_PORT..."
 
 # 后台启动并重定向日志
+#
 nohup python src/services/resource_api.py > $LOG_DIR/resource_api.log 2>&1 &
 PID_RES=$!
 echo "   - Resource API PID: $PID_RES"
@@ -55,7 +56,8 @@ echo " ✅ Ready!"
 # =================================================================
 echo "🚀 [3/3] Starting MCP Gateway on port $GATEWAY_PORT..."
 
-# 使用 gateway_config.json 启动复合网关 (同时支持 RAG 和 VM)
+# 使用 gateway_config.json 启动复合网关
+#
 nohup python src/mcp_server/main.py --config gateway_config.json --port $GATEWAY_PORT > $LOG_DIR/gateway.log 2>&1 &
 PID_GW=$!
 echo "   - Gateway PID: $PID_GW"
@@ -82,22 +84,42 @@ echo ""
 echo "🎉 Server Environment Established Successfully!"
 echo "   - Resource API: http://localhost:$RESOURCE_PORT"
 echo "   - MCP Gateway:  http://localhost:$GATEWAY_PORT/sse"
-echo "   - Logs:         $LOG_DIR/"
+echo "   - Logs Dir:     $LOG_DIR/"
+echo "     ├─ resource_api.log (后端资源分配日志)"
+echo "     ├─ gateway.log      (MCP 网关交互日志)"
+echo "     └─ client_run.log   (Client 端执行/抓包日志) <--- [NEW]"
 echo ""
 echo "👉 Now running your rollout script:"
 echo "----------------------------------------------------------------"
 
-# 编辑此部分
+# =================================================================
+# [关键修改] 使用 tee 命令捕获 Client 输出
+# 2>&1 : 将错误输出(stderr)重定向到标准输出(stdout)
+# | tee file : 同时输出到屏幕和文件
+# =================================================================
 python src/run_parallel_rollout.py \
   --data_path hybrid_test_demo.jsonl \
   --num_rollouts 3 \
   --env_mode http_mcp \
   --mcp_server_url http://localhost:8080 \
   --resource_api_url http://localhost:8000 \
-  --output_dir results/test_run_hybrid
+  --output_dir results/test_run_hybrid \
+  2>&1 | tee $LOG_DIR/client_run.log
+
+# 捕获 Python 脚本的退出代码
+EXIT_CODE=${PIPESTATUS[0]}
+
+echo ""
+echo "----------------------------------------------------------------"
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "✅ Rollout completed successfully."
+else
+    echo "❌ Rollout failed with exit code $EXIT_CODE."
+fi
+echo "📋 Full client logs saved to: $LOG_DIR/client_run.log"
+
 # (可选) 脚本运行完后自动清理后台服务
-# Uncomment lines below if you want auto-cleanup
-# echo ""
-# echo "🛑 Cleaning up services..."
-# kill $PID_GW $PID_RES
-# echo "✅ Services stopped."
+echo ""
+echo "🛑 Cleaning up services..."
+kill $PID_GW $PID_RES
+echo "✅ Services stopped."
