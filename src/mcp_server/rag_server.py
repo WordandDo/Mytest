@@ -57,6 +57,9 @@ async def rag_initialization(worker_id: str, config_content: str = "") -> bool:
         if not session:
             raise RuntimeError(f"No active RAG session for worker: {worker_id}")
         
+        # 将top_k存储到session中供后续查询使用
+        session["config_top_k"] = top_k
+        
         # TODO: 实际调用设置知识库上下文的工具
         # 这可能需要与Resource API通信或直接调用相应的函数
         
@@ -111,7 +114,7 @@ async def setup_rag_session(worker_id: str) -> str:
     })
 
 @ToolRegistry.register_tool("rag_query")
-async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> str:
+async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] = None) -> str:
     """远程查询知识库"""
     session = RAG_SESSIONS.get(worker_id)
     if not session:
@@ -119,6 +122,22 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> st
 
     if not query:
         return json.dumps({"status": "error", "message": "Query cannot be empty"})
+
+    # 【关键逻辑调整】
+    # 1. 如果 Agent 传了值，用 Agent 的
+    # 2. 如果 Agent 没传，优先用 Task 初始化时注入的配置 (session["config_top_k"])
+    # 3. 如果 Task 也没配置，传 None 给后端，让后端使用 deployment_config.json 中的 default_top_k
+    
+    # 尝试从 Session 获取 Task 级配置 (前提是你实现了上一轮建议的 rag_initialization 修改)
+    task_config_top_k = session.get("config_top_k") if session else None
+    
+    # 决策最终的 effective_top_k
+    if top_k is not None:
+        effective_top_k = top_k          # Agent 显式指定，优先级最高
+    elif task_config_top_k is not None:
+        effective_top_k = task_config_top_k # Task 配置，优先级次之
+    else:
+        effective_top_k = None           # 传 None，触发后端读取 deployment_config.json
 
     try:
         async with httpx.AsyncClient() as client:
@@ -128,7 +147,7 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> st
                     "resource_id": session["resource_id"],
                     "worker_id": worker_id,
                     "query": query,
-                    "top_k": top_k
+                    "top_k": effective_top_k  # 发送 None 或具体数值
                 },
                 timeout=120
             )

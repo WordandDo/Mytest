@@ -655,6 +655,7 @@ class HttpMCPEnv:
             self.vm_port = res_data.get("port")
         elif res_type == "rag":
             self.rag_endpoint = res_data.get("endpoint")
+            #self.rag_endpoint = res_data.get("endpoint")
 
     def get_inital_obs(self) -> Dict[str, Any]:
         logger.info(f"[{self.worker_id}] Fetching batch initial observations from MCP...")
@@ -749,7 +750,11 @@ class HttpMCPEnv:
         return False
 
     def _allocate_resources_atomically(self, resource_init_data: Dict[str, Any]) -> bool:
+        """
+        [修复版] 原子化资源申请 + 自动初始化
+        """
         try:
+            # 1. 申请资源 (Allocate)
             args = {
                 "resource_types": self.active_resources,
                 "timeout": 600
@@ -762,8 +767,25 @@ class HttpMCPEnv:
                  logger.error(f"Atomic alloc tool failed: {data.get('message')}")
                  return False
 
+            # 2. 保存资源信息
             for r_type, r_data in data.items():
                 self._setup_single_resource(r_type, r_data)
+            
+            # ================= [修复点：增加初始化逻辑] =================
+            # 3. 执行资源初始化 (Setup)
+            # 只有当 allocate 成功后，才利用 task metadata 进行初始化
+            if resource_init_data:
+                logger.info(f"[{self.worker_id}] Setting up resources...")
+                
+                # 直接使用 resource_init_data，无需映射 Key，
+                # 因为服务端已经有了 vm_pyautogui_server.py
+                if not self._setup_resources_logic(self.worker_id, resource_init_data):
+                    logger.error(f"[{self.worker_id}] Resource setup failed!")
+                    # 初始化失败应当回滚释放资源
+                    self.release_resource(self.worker_id)
+                    return False
+            # ==========================================================
+
             return True
         except Exception as e:
             logger.error(f"Failed to allocate resources atomically via MCP: {e}")
