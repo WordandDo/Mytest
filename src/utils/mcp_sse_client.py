@@ -53,13 +53,13 @@ class MCPSSEClient:
         result = await self.session.list_tools()
         return result.tools
 
-    async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> str:
+    async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> CallToolResult:
         """
-        调用工具并返回解析后的文本结果。
+        调用工具并返回原始结果对象 (CallToolResult)。
         
         :param name: 工具名称
         :param arguments: 工具参数字典
-        :return: 工具执行结果 (字符串)
+        :return: CallToolResult 对象，包含完整的多模态响应内容
         """
         if not self.session:
             raise RuntimeError("Client not connected. Call connect() first.")
@@ -89,20 +89,8 @@ class MCPSSEClient:
         print(f"[MCP-CLI]    Data: {content_summary}\n")
         # === [新增日志 END] ===
         
-        # 解析结果 (MCP 可以返回 Text 或 Image)
-        output_parts = []
-        if result.content:
-            for item in result.content:
-                if item.type == 'text':
-                    output_parts.append(item.text)
-                elif item.type == 'image':
-                    output_parts.append(f"[Image: {item.mimeType}]")
-                elif item.type == 'resource':
-                     # 修复：通过.resource属性访问uri
-                     output_parts.append(f"[Resource: {item.resource.uri}]")
-
-        # 如果没有内容，可能是执行成功但无返回
-        return "\n".join(output_parts) if output_parts else "Success (No output)"
+        # 直接返回原始的 CallToolResult 对象，保留完整的多模态数据结构
+        return result
 
     async def close(self):
         """优雅关闭连接"""

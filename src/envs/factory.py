@@ -6,14 +6,15 @@ This module provides a factory pattern for creating environments,
 eliminating hard-coded if-elif chains in AgentRunner.
 """
 
-from typing import Type, Dict, Optional
+from typing import Type, Dict, Optional, Any, Union
 from .enviroment import Environment
 
 # Environment registry - maps mode names to environment classes
-_ENVIRONMENT_REGISTRY: Dict[str, Type[Environment]] = {}
+# [修改] 类型提示放宽为 Any，以支持解耦后的 HttpMCPEnv
+_ENVIRONMENT_REGISTRY: Dict[str, Any] = {}
 
 
-def register_environment(mode: str, env_class: Type[Environment]) -> None:
+def register_environment(mode: str, env_class: Any) -> None:
     """
     Register an environment class for a given mode.
     
@@ -24,8 +25,9 @@ def register_environment(mode: str, env_class: Type[Environment]) -> None:
     Example:
         >>> register_environment("custom", CustomEnvironment)
     """
-    if not issubclass(env_class, Environment):
-        raise TypeError(f"{env_class} must be a subclass of Environment")
+    # [关键修改] 移除了严格的子类检查，以支持独立的 HttpMCPEnv
+    # if not issubclass(env_class, Environment):
+    #     raise TypeError(f"{env_class} must be a subclass of Environment")
     _ENVIRONMENT_REGISTRY[mode] = env_class
 
 
@@ -62,7 +64,7 @@ def is_registered(mode: str) -> bool:
     return mode in _ENVIRONMENT_REGISTRY
 
 
-def get_environment_class(mode: str) -> Type[Environment]:
+def get_environment_class(mode: str) -> Any:
     """
     Get the environment class for a given mode.
     
@@ -90,7 +92,7 @@ def get_environment_class(mode: str) -> Type[Environment]:
     return _ENVIRONMENT_REGISTRY[mode]
 
 
-def create_environment(mode: str, **kwargs) -> Environment:
+def create_environment(mode: str, **kwargs) -> Any:
     """
     Create an environment instance using the factory pattern.
     
@@ -132,11 +134,11 @@ class EnvironmentFactory:
         """Initialize the factory."""
         self._registry = _ENVIRONMENT_REGISTRY
     
-    def register(self, mode: str, env_class: Type[Environment]) -> None:
+    def register(self, mode: str, env_class: Any) -> None:
         """Register an environment class."""
         register_environment(mode, env_class)
     
-    def create(self, mode: str, **kwargs) -> Environment:
+    def create(self, mode: str, **kwargs) -> Any:
         """Create an environment instance."""
         return create_environment(mode, **kwargs)
     
@@ -197,4 +199,3 @@ def _auto_register_builtin_environments():
 
 # Auto-register on module import
 _auto_register_builtin_environments()
-
