@@ -5,8 +5,11 @@ import base64
 import json
 import httpx
 import asyncio
-from typing import Optional, List
+from typing import Optional, List, Any, Union, Callable
 from dotenv import load_dotenv
+
+# 引入 MCP 标准类型
+from mcp.types import TextContent, ImageContent
 load_dotenv()
 cwd = os.getcwd()
 sys.path.append(cwd)
@@ -211,16 +214,6 @@ async def evaluate_task(worker_id: str) -> str:
 
 # --- 观察工具 (Group: desktop_observation) ---
 
-@ToolRegistry.register_tool("desktop_observation") # [新增注册]
-async def get_observation(worker_id: str) -> str:
-    """获取当前屏幕状态"""
-    ctrl = _get_controller(worker_id)
-    screenshot = ctrl.get_screenshot()
-    shot_b64 = base64.b64encode(screenshot).decode('utf-8') if screenshot else ""
-    return json.dumps({
-        "screenshot": shot_b64,
-        "accessibility_tree": ctrl.get_accessibility_tree()
-    })
 
 @ToolRegistry.register_tool("desktop_observation")
 async def start_recording(worker_id: str) -> str:
@@ -249,109 +242,179 @@ async def stop_recording(worker_id: str, save_path: str) -> str:
     except Exception as e:
         return f"Failed to stop recording: {str(e)}"
 
-# --- 动作工具：拆分为 Computer 13, PyAutoGUI 和 Shared ---
+# =============================================================================
+# [核心改造] 动作执行与观测捕获的统一封装
+# =============================================================================
+
+async def _execute_and_capture(worker_id: str, action_logic: Callable) -> List[Union[TextContent, ImageContent]]:
+    """
+    执行动作逻辑，并立即捕获当前屏幕状态和 A11y Tree。
+    返回符合 MCP 协议的多模态内容列表。
+    """
+    contents = []
+    
+    # 1. 执行动作
+    try:
+        # 调用传入的 lambda 或函数执行具体的 controller 操作
+        action_result = action_logic() 
+        # 动作执行成功的文本反馈
+        feedback_text = f"Action Executed Successfully."
+        if action_result:
+             feedback_text += f" Output: {action_result}"
+        contents.append(TextContent(type="text", text=feedback_text))
+        
+    except Exception as e:
+        # 如果动作执行失败，返回错误文本，通常不需要截图（或者也可以截图用于调试）
+        return [TextContent(type="text", text=f"Error executing action: {str(e)}")]
+
+    # 2. 捕获观测 (Action-as-Observation)
+    try:
+        ctrl = _get_controller(worker_id)
+        
+        # A. 获取截图
+        screenshot = ctrl.get_screenshot()
+        if screenshot:
+            screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
+            contents.append(ImageContent(
+                type="image",
+                data=screenshot_b64,
+                mimeType="image/png"
+            ))
+        
+        # B. 获取 A11y Tree
+        # 我们将其包装在 XML 标签中，方便 Agent 区分这是 Tree 而不是普通文本
+        tree = ctrl.get_accessibility_tree()
+        if tree:
+            contents.append(TextContent(
+                type="text", 
+                text=f"<accessibility_tree>\n{tree}\n</accessibility_tree>"
+            ))
+            
+    except Exception as e:
+        contents.append(TextContent(type="text", text=f"Warning: Failed to capture post-action observation: {e}"))
+
+    return contents
+
+# =============================================================================
+# 动作工具 (重构为返回多模态列表)
+# =============================================================================
 
 # 1. Computer 13 专属动作
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_mouse_move(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
+async def desktop_mouse_move(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> list:
     ctrl = _get_controller(worker_id)
     params = {}
     if x is not None and y is not None:
         params = {"x": x, "y": y}
-    ctrl.execute_action({"action_type": "MOVE_TO", "parameters": params})
-    return json.dumps({"status": "success", "action": "MOVE_TO"})
+    
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "MOVE_TO", "parameters": params})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_mouse_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None, button: str = "left", num_clicks: int = 1) -> str:
+async def desktop_mouse_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None, button: str = "left", num_clicks: int = 1) -> list:
     ctrl = _get_controller(worker_id)
     params = {"button": button, "num_clicks": num_clicks}
     if x is not None and y is not None:
         params.update({"x": x, "y": y})
-    ctrl.execute_action({"action_type": "CLICK", "parameters": params})
-    return json.dumps({"status": "success", "action": "CLICK"})
+    
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "CLICK", "parameters": params})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_mouse_right_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
+async def desktop_mouse_right_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> list:
     ctrl = _get_controller(worker_id)
     params = {}
     if x is not None and y is not None:
         params = {"x": x, "y": y}
-    ctrl.execute_action({"action_type": "RIGHT_CLICK", "parameters": params})
-    return json.dumps({"status": "success", "action": "RIGHT_CLICK"})
+    
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "RIGHT_CLICK", "parameters": params})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_mouse_double_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> str:
+async def desktop_mouse_double_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> list:
     ctrl = _get_controller(worker_id)
     params = {}
     if x is not None and y is not None:
         params = {"x": x, "y": y}
-    ctrl.execute_action({"action_type": "DOUBLE_CLICK", "parameters": params})
-    return json.dumps({"status": "success", "action": "DOUBLE_CLICK"})
+    
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "DOUBLE_CLICK", "parameters": params})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_mouse_drag(worker_id: str, x: int, y: int) -> str:
+async def desktop_mouse_drag(worker_id: str, x: int, y: int) -> list:
     ctrl = _get_controller(worker_id)
-    ctrl.execute_action({"action_type": "DRAG_TO", "parameters": {"x": x, "y": y}})
-    return json.dumps({"status": "success", "action": "DRAG_TO"})
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "DRAG_TO", "parameters": {"x": x, "y": y}})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_scroll(worker_id: str, dx: Optional[int] = None, dy: Optional[int] = None) -> str:
+async def desktop_scroll(worker_id: str, dx: Optional[int] = None, dy: Optional[int] = None) -> list:
     ctrl = _get_controller(worker_id)
     params = {}
     if dx is not None: params["dx"] = dx
     if dy is not None: params["dy"] = dy
-    ctrl.execute_action({"action_type": "SCROLL", "parameters": params})
-    return json.dumps({"status": "success", "action": "SCROLL"})
+    
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "SCROLL", "parameters": params})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_type(worker_id: str, text: str) -> str:
+async def desktop_type(worker_id: str, text: str) -> list:
     ctrl = _get_controller(worker_id)
-    ctrl.execute_action({"action_type": "TYPING", "parameters": {"text": text}})
-    return json.dumps({"status": "success", "action": "TYPING"})
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "TYPING", "parameters": {"text": text}})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_key_press(worker_id: str, key: str) -> str:
+async def desktop_key_press(worker_id: str, key: str) -> list:
     ctrl = _get_controller(worker_id)
-    ctrl.execute_action({"action_type": "PRESS", "parameters": {"key": key}})
-    return json.dumps({"status": "success", "action": "PRESS"})
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "PRESS", "parameters": {"key": key}})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_key_hold(worker_id: str, key: str, action: str) -> str:
+async def desktop_key_hold(worker_id: str, key: str, action: str) -> list:
     ctrl = _get_controller(worker_id)
     act_type = "KEY_DOWN" if action.lower() == "down" else "KEY_UP"
-    ctrl.execute_action({"action_type": act_type, "parameters": {"key": key}})
-    return json.dumps({"status": "success", "action": "KEY_ACTION"})
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": act_type, "parameters": {"key": key}})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
-async def desktop_hotkey(worker_id: str, keys: List[str]) -> str:
+async def desktop_hotkey(worker_id: str, keys: List[str]) -> list:
     ctrl = _get_controller(worker_id)
-    ctrl.execute_action({"action_type": "HOTKEY", "parameters": {"keys": keys}})
-    return json.dumps({"status": "success", "action": "HOTKEY"})
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": "HOTKEY", "parameters": {"keys": keys}})
+    )
 
 # 2. PyAutoGUI 专属动作
 @ToolRegistry.register_tool("desktop_action_pyautogui")
-async def desktop_execute_python_script(worker_id: str, script: str) -> str:
+async def desktop_execute_python_script(worker_id: str, script: str) -> list:
     ctrl = _get_controller(worker_id)
-    try:
-        result = ctrl.execute_python_command(script)
-        return json.dumps({"status": "success", "output": result})
-    except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+    # execute_python_command 可能返回 dict 或 str
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_python_command(script)
+    )
 
 # 3. 共享动作 (注册到两个组)
 @ToolRegistry.register_tool("desktop_action_computer13")
 @ToolRegistry.register_tool("desktop_action_pyautogui")
-async def desktop_mouse_button(worker_id: str, action: str, button: str = "left") -> str:
-    # 注意：computer_13 用 MOUSE_DOWN/UP，PyAutoGUI 模式下 Controller 也应该能处理
+async def desktop_mouse_button(worker_id: str, action: str, button: str = "left") -> list:
     ctrl = _get_controller(worker_id)
     act_type = "MOUSE_DOWN" if action.lower() == "down" else "MOUSE_UP"
-    ctrl.execute_action({"action_type": act_type, "parameters": {"button": button}})
-    return json.dumps({"status": "success", "action": act_type})
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action({"action_type": act_type, "parameters": {"button": button}})
+    )
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 @ToolRegistry.register_tool("desktop_action_pyautogui")
-async def desktop_control(worker_id: str, action: str) -> str:
+async def desktop_control(worker_id: str, action: str) -> list:
     ctrl = _get_controller(worker_id)
     act_str = action.upper()
-    ctrl.execute_action(act_str)
-    return json.dumps({"status": "success", "action": act_str})
+    return await _execute_and_capture(worker_id, lambda: 
+        ctrl.execute_action(act_str)
+    )

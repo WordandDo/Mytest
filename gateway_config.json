@@ -11,10 +11,7 @@
       "resource_type": "rag",
       "tool_groups": ["rag_lifecycle", "rag_query"]
     },
-    {
-      "resource_type": "vm_computer_13",
-      "tool_groups": ["computer_lifecycle", "desktop_observation", "desktop_action_computer13"]
-    },
+
     {
       "resource_type": "vm_pyautogui",
       "tool_groups": ["computer_lifecycle", "desktop_observation", "desktop_action_pyautogui"]

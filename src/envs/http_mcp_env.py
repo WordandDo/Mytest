@@ -220,25 +220,70 @@ class HttpMCPEnv(Environment):
     def _list_tools_sync(self):
         return self._run_sync(self.mcp_client.list_tools())
 
-    def _call_tool_sync(self, name, arguments):
-        # 自动注入 worker_id
-        # 这是为了确保 Agent 调用 RAG 等工具时，后端能识别是哪个 Worker 发起的请求
+    def _call_tool_sync(self, name, arguments) -> Union[Dict[str, Any], Any]:
+        """
+        [统一协调层]
+        同步调用 MCP 工具，并根据返回类型进行标准化处理，
+        以适配 Environment.run_task 的期望格式。
+        """
+        # 1. 注入 worker_id
         if isinstance(arguments, dict) and "worker_id" not in arguments:
             arguments["worker_id"] = self.worker_id
             
-        # === [新增日志 START] ===
         logger.info(f"[{self.worker_id}] ⏳ Sync Calling: {name}...")
         start_time = time.time()
-        # === [新增日志 END] ===
 
+        # 2. 获取原始 CallToolResult 对象 (前提是 MCPSSEClient 已经按要求修改为返回对象)
         res = self._run_sync(self.mcp_client.call_tool(name, arguments))
 
-        # === [新增日志 START] ===
         duration = time.time() - start_time
         logger.info(f"[{self.worker_id}] ✅ Sync Call Done: {name} (Took {duration:.2f}s)")
-        # === [新增日志 END] ===
 
-        return res
+        # ================== [生命周期工具的特殊处理] ==================
+        # 这些工具的返回值通常是 JSON 结构，用于环境初始化或资源管理
+        # 它们不直接参与 Agent 的 Observation Loop
+        lifecycle_tools = {
+            "allocate_batch_resources", "setup_batch_resources", 
+            "get_batch_initial_observations", "setup_vm_session", 
+            "setup_rag_session", "teardown_environment", "release_rag_session"
+        }
+        
+        if name in lifecycle_tools:
+            return res  # 直接返回对象，供 _parse_mcp_response 处理
+
+        # ================== [通用 Action 工具的统一处理] ==================
+        # 目标：将多模态结果转换为 run_task 可识别的标准字典：
+        # {
+        #    "text": "Action successful.\n<accessibility_tree>...</accessibility_tree>",
+        #    "images": ["base64_str_1", ...]
+        # }
+        
+        standardized_output = {
+            "text": "",
+            "images": []
+        }
+        
+        text_parts = []
+        
+        # 容错处理：确保 res 是 CallToolResult 且有 content
+        if hasattr(res, 'content') and res.content:
+            for item in res.content:
+                if item.type == 'text':
+                    # 收集所有文本块 (包含执行反馈、A11y Tree 等)
+                    text_parts.append(item.text)
+                elif item.type == 'image':
+                    # 收集所有图片 (Base64)
+                    standardized_output["images"].append(item.data)
+                elif item.type == 'resource':
+                    text_parts.append(f"[Resource: {item.uri}]")
+        else:
+            # 兼容旧的或空的返回值
+            text_parts.append(str(res) if res else "Success (No content)")
+
+        standardized_output["text"] = "\n".join(text_parts)
+        
+        # 返回字典，Environment.run_task 会自动识别 "images" 字段并注入 Vision Message
+        return standardized_output
 
     def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:
         """解析MCP响应结果"""
