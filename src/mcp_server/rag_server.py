@@ -13,7 +13,6 @@ from typing import Optional, Dict
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from mcp_server.core.probe import wait_for_resource_availability
 from mcp_server.core.registry import ToolRegistry
 
 # 环境设置
@@ -74,24 +73,32 @@ RAG_SESSIONS: Dict[str, Dict] = {}
 async def setup_rag_session(worker_id: str) -> str:
     """初始化 RAG 会话：申请访问 Token。
     (原名 setup_rag_engine)
+    
+    此函数已移除客户端探活机制，通过设置长超时来支持服务端排队。
     """
-    is_available = await wait_for_resource_availability(
-        RESOURCE_API_URL, "rag", timeout=60
-    )
-    if not is_available:
-        return json.dumps({"status": "error", "message": "System busy: No RAG slots available."})
+    req_timeout = 600.0  # 设置600秒的超时，允许在服务端排队
+    target_resource_type = "rag"
 
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.post(
                 f"{RESOURCE_API_URL}/allocate",
-                json={"worker_id": worker_id, "type": "rag"},
-                timeout=60
+                json={
+                    "worker_id": worker_id,
+                    "type": target_resource_type,
+                    "timeout": req_timeout
+                },
+                timeout=req_timeout + 5  # 客户端超时略长于逻辑超时
             )
             resp.raise_for_status()
             data = resp.json()
+        except httpx.TimeoutException:
+            return json.dumps({
+                "status": "error",
+                "message": f"System busy: Could not acquire RAG resource within {req_timeout}s. Please try again later."
+            })
         except Exception as e:
-            return json.dumps({"status": "error", "message": str(e)})
+            return json.dumps({"status": "error", "message": f"RAG allocation failed: {str(e)}"})
 
     resource_id = data.get("id")
     token = data.get("token")
@@ -123,7 +130,7 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: int = 3) -> st
                     "query": query,
                     "top_k": top_k
                 },
-                timeout=30
+                timeout=120
             )
             if resp.status_code != 200:
                 return json.dumps({"status": "error", "message": f"Remote Error: {resp.text}"})
