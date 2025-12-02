@@ -53,7 +53,7 @@ class MCPSSEClient:
         result = await self.session.list_tools()
         return result.tools
 
-    async def call_tool(self, name: str, arguments: Dict[str, Any] = None) -> str:
+    async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> str:
         """
         调用工具并返回解析后的文本结果。
         
@@ -62,11 +62,11 @@ class MCPSSEClient:
         :return: 工具执行结果 (字符串)
         """
         if not self.session:
-            raise RuntimeError("Client not connected.")
+            raise RuntimeError("Client not connected. Call connect() first.")
         
         if arguments is None:
             arguments = {}
-
+            
         # === [新增日志 START] ===
         # 打印请求详情 (截断过长的参数，如 init_script)
         debug_args = arguments.copy()
@@ -77,14 +77,14 @@ class MCPSSEClient:
         print(f"[MCP-CLI]    Args: {json.dumps(debug_args, ensure_ascii=False)}")
         # === [新增日志 END] ===
 
-        # 发送 CallToolRequest
-        result: CallToolResult = await self.session.call_tool(name, arguments)
+        result = await self.session.call_tool(name, arguments)
         
         # === [新增日志 START] ===
         # 打印响应摘要
         content_summary = "Empty"
         if result.content:
-            content_summary = str(result.content)[:500] # 限制日志长度
+            # 限制日志长度
+            content_summary = str(result.content)[:500]
         print(f"[MCP-CLI] ⬅️ RES Tool: {name}")
         print(f"[MCP-CLI]    Data: {content_summary}\n")
         # === [新增日志 END] ===
@@ -98,7 +98,8 @@ class MCPSSEClient:
                 elif item.type == 'image':
                     output_parts.append(f"[Image: {item.mimeType}]")
                 elif item.type == 'resource':
-                     output_parts.append(f"[Resource: {item.uri}]")
+                     # 修复：通过.resource属性访问uri
+                     output_parts.append(f"[Resource: {item.resource.uri}]")
 
         # 如果没有内容，可能是执行成功但无返回
         return "\n".join(output_parts) if output_parts else "Success (No output)"

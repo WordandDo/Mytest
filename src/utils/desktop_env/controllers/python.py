@@ -1,7 +1,7 @@
 import json
 import logging
 import random
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 import time
 import traceback
 import requests
@@ -246,13 +246,19 @@ class PythonController:
             "returncode": -1
         }
 
-    def execute_action(self, action: Dict[str, Any]):
+    def execute_action(self, action: Union[Dict[str, Any], str]):
         """
         Executes an action on the server computer.
         """
-        if action in ['WAIT', 'FAIL', 'DONE']:
-            return
+        # 兼容字符串类型的输入（如 'WAIT', 'DONE' 等）
+        if isinstance(action, str):
+            if action in ['WAIT', 'FAIL', 'DONE']:
+                return
+            # 如果传入了不识别的字符串，原有代码会在 action["action_type"] 处报错
+            # 为了保持行为一致或更安全，可以加上类型检查
+            raise ValueError(f"Unexpected string action received: {action}")
 
+        # 下面是处理字典类型的逻辑
         action_type = action["action_type"]
         parameters = action["parameters"] if "parameters" in action else {param: action[param] for param in action if param != 'action_type'}
         move_mode = random.choice(
@@ -464,9 +470,17 @@ class PythonController:
     # Additional info
     def get_vm_platform(self):
         """
-        Gets the size of the vm screen.
+        Gets the platform of the vm (e.g., Linux, Windows).
         """
-        return self.execute_python_command("import platform; print(platform.system())")['output'].strip()
+        # 1. 获取结果赋值给变量
+        result = self.execute_python_command("import platform; print(platform.system())")
+        
+        # 2. 检查结果是否不为 None 且包含 'output' 字段
+        if result and isinstance(result, dict) and 'output' in result:
+            return result['output'].strip()
+            
+        # 3. 如果获取失败，返回默认值（防止崩溃）
+        return "Unknown"
 
     def get_vm_screen_size(self):
         """

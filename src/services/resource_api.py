@@ -121,12 +121,17 @@ class RAGQueryReq(BaseModel):
 
 @app.post("/allocate")
 def allocate_resource(req: AllocReq):
+    # [新增] 检查 manager 是否已初始化
+    if manager is None:
+        logger.error("Resource Manager is not initialized.")
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
     # [Log] 记录分配请求的到达
     req_desc = req.resource_types if (req.resource_types and len(req.resource_types) > 0) else req.type
     logger.info(f"📥 [AllocReq] Worker={req.worker_id} requesting: {req_desc} (Timeout={req.timeout}s)")
     
     try:
-        # [新增] 优先检查是否有批量申请需求
+        # 此时类型检查器知道 manager 一定不是 None，因为如果是 None 上面就抛异常了
         if req.resource_types and len(req.resource_types) > 0:
             result = manager.allocate_atomic(req.worker_id, req.resource_types, req.timeout)
         else:
@@ -146,6 +151,11 @@ def allocate_resource(req: AllocReq):
 
 @app.post("/release")
 def release_resource(req: ReleaseReq, background_tasks: BackgroundTasks):
+    # [新增] 检查 manager 是否已初始化
+    if manager is None:
+        logger.error("Resource Manager is not initialized.")
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
     # [Log] 记录释放请求
     logger.info(f"🗑️ [ReleaseReq] Worker={req.worker_id} releasing Resource={req.resource_id}")
     background_tasks.add_task(manager.release, req.resource_id, req.worker_id)
@@ -154,6 +164,11 @@ def release_resource(req: ReleaseReq, background_tasks: BackgroundTasks):
 # [修改] 直接透传 None 给 Manager，由底层决定最终数值
 @app.post("/query_rag")
 def query_rag_service(req: RAGQueryReq):
+    # [新增] 检查 manager 是否已初始化
+    if manager is None:
+        logger.error("Resource Manager is not initialized.")
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
     try:
         # [Log] 记录RAG查询
         logger.info(f"🔍 [RAGQuery] Worker={req.worker_id} Resource={req.resource_id}")
@@ -169,15 +184,22 @@ def query_rag_service(req: RAGQueryReq):
 
 @app.get("/status")
 def get_status():
+    # [新增] 检查 manager 是否已初始化
+    if manager is None:
+        logger.error("Resource Manager is not initialized.")
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
     return manager.get_status()
 
 # [新增] 获取初始观测数据的 API
 @app.post("/get_initial_observations")
 def get_initial_observations_endpoint(req: GetObsReq):
+    # [修改] 检查 manager 是否已初始化
+    if manager is None:
+        logger.error("Resource Manager is not initialized.")
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
     try:
-        if not manager:
-             raise HTTPException(status_code=503, detail="Resource Manager not initialized")
-             
         # Log
         logger.info(f"👁️ [GetObs] Worker={req.worker_id} requesting initial observations")
         
