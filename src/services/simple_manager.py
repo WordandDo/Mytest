@@ -31,20 +31,6 @@ class GenericResourceManager:
                 logger.info(f"Skipping disabled resource: {res_type}")
                 continue
 
-            # ================= [新增逻辑开始] =================
-            # 自动推断 action_space：如果配置里没写，就尝试从名字里取
-            # 逻辑：假设名字格式为 "vm_{action_space}"，例如 "vm_computer_13"
-            if "vm" in res_type and "action_space" not in res_conf["config"]:
-                parts = res_type.split("_", 1) # 从第一个下划线分割
-                if len(parts) > 1:
-                    inferred_space = parts[1]
-                    res_conf["config"]["action_space"] = inferred_space
-                    logger.info(f"ℹ️ Auto-inferred action_space='{inferred_space}' from pool name '{res_type}'")
-                else:
-                    # 如果名字只是 "vm"，可以给一个默认值，或者报错
-                    res_conf["config"]["action_space"] = "computer_13" # 默认回退
-            # ================= [新增逻辑结束] =================
-
             logger.info(f"--> Init Pool: {res_type}")
             try:
                 # 1. 使用工厂创建实例 (此时 config 里已经有了 action_space)
@@ -137,8 +123,10 @@ class GenericResourceManager:
                 logger.info(f"⏳ [AtomicWait] Worker={worker_id} Waiting for {unavailable_resource}... (Elapsed: {elapsed:.1f}s)")
                 self.state_cond.wait(timeout=5.0)
 
-    def allocate(self, worker_id: str, timeout: float = 60.0, resource_type: str = "vm") -> Dict[str, Any]:
-        """通用申请资源逻辑（单资源，兼容旧接口）"""
+    def allocate(self, worker_id: str, timeout: float = 60.0, resource_type: str = None) -> Dict[str, Any]:
+        """通用申请资源逻辑（单资源）"""
+        if not resource_type:
+             raise ValueError("resource_type must be specified")
         res_map = self.allocate_atomic(worker_id, [resource_type], timeout)
         return res_map[resource_type]
 

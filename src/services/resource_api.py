@@ -95,12 +95,16 @@ async def monitor_resource_usage():
             logger.error(f"Monitor error: {e}", exc_info=True)
         await asyncio.sleep(30)
 
-# [修改] 更新 AllocReq 模型，增加 resource_types 字段
+# [修改] 更新 AllocReq 模型
 class AllocReq(BaseModel):
     worker_id: str
     timeout: float = 60.0
-    type: str = "vm"  # 默认为 vm，兼容旧代码
-    # [新增] 可选的资源类型列表
+    
+    # [关键修改] 移除 "vm" 默认值，设为 Optional
+    # 这样高层如果不传 type，就不会默认指向 "vm"，而是由 resource_types 决定
+    type: Optional[str] = None 
+    
+    # 推荐使用列表方式申请
     resource_types: Optional[List[str]] = None
 
 class ReleaseReq(BaseModel):
@@ -126,6 +130,10 @@ def allocate_resource(req: AllocReq):
         logger.error("Resource Manager is not initialized.")
         raise HTTPException(status_code=503, detail="Service not initialized")
 
+    # [新增] 校验：必须至少指定一种资源
+    if not req.resource_types and not req.type:
+        raise HTTPException(status_code=400, detail="Must specify 'resource_types' (list) or 'type' (string)")
+
     # [Log] 记录分配请求的到达
     req_desc = req.resource_types if (req.resource_types and len(req.resource_types) > 0) else req.type
     logger.info(f"📥 [AllocReq] Worker={req.worker_id} requesting: {req_desc} (Timeout={req.timeout}s)")
@@ -135,7 +143,7 @@ def allocate_resource(req: AllocReq):
         if req.resource_types and len(req.resource_types) > 0:
             result = manager.allocate_atomic(req.worker_id, req.resource_types, req.timeout)
         else:
-            # [兼容] 走旧的单资源申请路径
+            # 单资源申请，明确传入 req.type
             result = manager.allocate(req.worker_id, req.timeout, resource_type=req.type)
         
         # [Log] 记录分配成功
@@ -147,6 +155,7 @@ def allocate_resource(req: AllocReq):
         logger.error(f"❌ [AllocFail] Worker={req.worker_id} failed: {e}", exc_info=True)
         if "No resources available" in str(e) or "timeout" in str(e).lower():
              raise HTTPException(status_code=503, detail=str(e))
+        # 如果是资源未找到 (e.g. key mismatch)，也会在这里捕获
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/release")
