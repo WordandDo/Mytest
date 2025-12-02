@@ -1008,3 +1008,36 @@ class SetupController:
                 logger.error("An error occurred while trying to send the request: %s", e)
 
             self._execute_setup(["sudo chown -R user:user /home/user/.config/google-chrome/Default/History"], shell=True)
+
+# [新增] 补充缺失的 helper 函数
+def execute_setup_steps(controller: PythonController, config: List[Dict[str, Any]]) -> bool:
+    """
+    根据给定的 PythonController 实例信息，初始化 SetupController 并执行配置步骤。
+    
+    Args:
+        controller: 已初始化的 PythonController 实例 (包含 IP 和端口信息)
+        config: 任务配置列表 (setup steps)
+    
+    Returns:
+        bool: 执行是否成功
+    """
+    if not config:
+        return True
+
+    # 尝试从 controller 的 http_server 属性中解析端口 (格式通常为 http://ip:port)
+    server_port = 5000
+    try:
+        if hasattr(controller, "http_server"):
+            server_port = int(controller.http_server.split(":")[-1])
+    except Exception as e:
+        logger.warning(f"Could not parse port from controller, using default 5000: {e}")
+
+    # 初始化 SetupController
+    # 注意：这里使用默认的辅助端口 (chromium 9222, vlc 8080 等)，如果有特殊配置需从环境变量读取
+    setup_controller = SetupController(
+        vm_ip=controller.vm_ip, 
+        server_port=server_port
+    )
+    
+    # 执行 setup
+    return setup_controller.setup(config)

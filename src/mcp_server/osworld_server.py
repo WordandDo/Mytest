@@ -17,7 +17,6 @@ sys.path.append(os.path.join(cwd, "src"))
 
 from mcp.server.fastmcp import FastMCP
 from src.utils.desktop_env.controllers.python import PythonController
-from mcp_server.core.probe import wait_for_resource_availability
 
 # [新增] 导入注册表
 from mcp_server.core.registry import ToolRegistry
@@ -49,9 +48,22 @@ async def vm_initialization(worker_id: str, config_content: str = "") -> bool:
     try:
         session = GLOBAL_SESSIONS.get(worker_id)
         if not session or not session.get("controller"):
-            # Session未找到，尝试调用setup_vm_task工具
-            return await setup_vm_task(worker_id=worker_id, init_config=config_content)
+            # Session未找到，尝试调用 setup_vm_session 工具进行初始化
+            # 注意：setup_vm_session 需要 config_name 和 task_id，此处作为自动初始化使用默认占位符
+            try:
+                result_json = await setup_vm_session(
+                    config_name="auto_init", 
+                    task_id="unknown", 
+                    worker_id=worker_id, 
+                    init_script=config_content
+                )
+                result = json.loads(result_json)
+                return result.get("status") == "success"
+            except Exception as e:
+                print(f"Auto setup_vm_session failed for {worker_id}: {e}")
+                return False
         
+        # 如果 Session 存在，则手动执行配置逻辑
         controller = session["controller"]
         
         # 判断是否是JSON格式的任务规范
@@ -89,35 +101,64 @@ def _get_controller(worker_id: str) -> PythonController:
 
 # --- 生命周期工具 (Group: computer_lifecycle) ---
 
-@ToolRegistry.register_tool("computer_lifecycle")  # [新增注册]
+@ToolRegistry.register_tool("computer_lifecycle")
 async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_script: str = "") -> str:
-    """初始化 VM 会话：申请 VM 资源并初始化控制器。
-    (原名 setup_environment，已重命名以消除歧义)
+    """
+    初始化 VM 会话：直接申请 VM 资源并初始化控制器。
+    
+    Args:
+        config_name: 配置名称，用于决定申请哪种类型的 VM 资源。
+                     - 包含 "computer_13" -> 申请 "vm_computer_13"
+                     - 包含 "pyautogui" -> 申请 "vm_pyautogui"
+                     - 其他 -> 默认为 "vm_pyautogui"
+        task_id: 任务 ID
+        worker_id: Worker ID
+        init_script: 初始化脚本内容
     """
     
-    # 1. 资源探活：在发起申请前，先确认有空闲资源
-    # 避免盲目调用 /allocate 导致死锁或长时间 HTTP 挂起
-    is_available = await wait_for_resource_availability(
-        api_url=RESOURCE_API_URL,
-        resource_type="vm",
-        timeout=30  # 等待 30 秒，如果还没有释放则报错
-    )
+    # 1. [核心修改] 动态资源类型选择
+    # 逻辑：根据 config_name 推断 deployment_config.json 中定义的资源 Key
+    target_resource_type = "vm_pyautogui"  # 默认值 (因为您的配置中它是 enabled=true)
     
-    if not is_available:
-        return json.dumps({
-            "status": "error", 
-            "message": "System busy: No VM resources available. Please try again later."
-        })
+    if config_name:
+        cn_lower = config_name.lower()
+        if "computer_13" in cn_lower or "computer13" in cn_lower:
+            target_resource_type = "vm_computer_13"
+        elif "pyautogui" in cn_lower:
+            target_resource_type = "vm_pyautogui"
+    
+    # 2. [核心修改] 设置长超时，允许排队
+    # Task 执行和 Reset 较慢，给予 600秒 (10分钟) 的排队等待窗口
+    req_timeout = 600.0 
 
-    # 2. 正式申请资源 (原有逻辑)
     async with httpx.AsyncClient() as client:
         try:
-            # Resource API 的 allocate 是幂等的，可以安全重试
-            resp = await client.post(f"{RESOURCE_API_URL}/allocate", json={"worker_id": worker_id}, timeout=120)
+            # 3. [核心修改] 直接发起申请 (无探活)
+            resp = await client.post(
+                f"{RESOURCE_API_URL}/allocate",
+                json={
+                    "worker_id": worker_id, 
+                    "type": target_resource_type, # 动态传递资源类型
+                    "timeout": req_timeout        # 传递超时参数给服务端
+                },
+                # HTTP 连接超时需略大于逻辑超时，防止断连
+                timeout=req_timeout + 5 
+            )
             resp.raise_for_status()
             data = resp.json()
+            
+        except httpx.TimeoutException:
+            # 捕获超时：说明在服务端排队 600s 后仍无资源释放
+            return json.dumps({
+                "status": "error", 
+                "message": f"System busy: Could not acquire '{target_resource_type}' within {req_timeout}s. Resource queue timeout."
+            })
+        except httpx.HTTPStatusError as e:
+            # 捕获 503 等服务端明确返回的错误
+            error_msg = f"Allocation failed: {e.response.text}"
+            return json.dumps({"status": "error", "message": error_msg})
         except Exception as e:
-            return json.dumps({"status": "error", "message": f"Alloc failed: {e}"})
+            return json.dumps({"status": "error", "message": f"Network/Unknown error: {str(e)}"})
 
     env_id = data.get("id")
     ip = data.get("ip")
