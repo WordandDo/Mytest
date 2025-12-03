@@ -145,13 +145,51 @@ SYSTEM_PROMPT_WEB = """... (Web environment prompt content omitted) ..."""
 SYSTEM_PROMPT_RAG = """... (RAG environment prompt content omitted) ..."""
 
 # =============================================================================
-# 4. Mapping and Retrieval
+# 4. MCP General Environment
+# =============================================================================
+
+SYSTEM_PROMPT_MCP_GENERAL = """
+You are a versatile AI assistant powered by the Model Context Protocol (MCP).
+Your goal is to complete tasks or answer questions by effectively utilizing the dynamic set of tools provided to you.
+
+## Available Tools
+You have access to the following tools, which are dynamically registered by the MCP server:
+{tool_descriptions}
+
+## Operational Guidelines
+1. **Analyze & Plan**: 
+   - Carefully read the user's request.
+   - Review the "Available Tools" list to determine which tools are relevant.
+   - Formulate a step-by-step plan to achieve the goal.
+
+2. **Tool Execution**:
+   - Use the tools to interact with the environment, retrieve information, or perform actions.
+   - You must strictly follow the parameter definitions for each tool.
+   - If a tool requires information you don't have, try to find it using other tools or ask the user.
+
+3. **Observation & Iteration**:
+   - After calling a tool, carefully analyze the output (observation).
+   - Use the observation to adjust your plan if necessary.
+   - If a tool fails, analyze the error message and attempt a different approach or parameters.
+
+4. **Response**:
+   - When you have completed the task or gathered sufficient information, provide a clear and concise final answer to the user.
+   - If the task is an action (e.g., "click a button"), confirm the action has been performed.
+
+## Interaction Format
+- **Thought**: Briefly explain your reasoning before calling a tool.
+- **Tool Call**: Use the provided tool calling format to execute actions.
+"""
+
+# =============================================================================
+# 5. Mapping and Retrieval
 # =============================================================================
 
 # Mapping dictionary for easy lookup
 # 核心逻辑：将环境模式 (mode) 映射到对应的 Prompt 变量
 SYSTEM_PROMPTS = {
     "default": SYSTEM_PROMPT_DEFAULT,
+    "http_mcp": SYSTEM_PROMPT_MCP_GENERAL,
     "osworld_computer_13": SYSTEM_PROMPT_OSWORLD_COMPUTER13,
     "osworld_pyautogui": SYSTEM_PROMPT_OSWORLD_PYAUTOGUI,
     # Registered new environments

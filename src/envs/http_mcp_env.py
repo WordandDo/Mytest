@@ -16,6 +16,9 @@ from utils.mcp_sse_client import MCPSSEClient
 # 引入任务超时监控工具
 from utils.task_timeout import TaskTimeoutMonitor, TaskTimeoutError, check_execution_timeout
 
+# 引入 system prompt 函数
+from prompts.system_prompts import get_system_prompt
+
 import openai
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 
@@ -46,7 +49,7 @@ class HttpMCPEnv:
         self.tool_descriptions: str = ""
 
         # 1. 基础配置
-        self.server_url = kwargs.get("mcp_server_url", "http://localhost:8000")
+        self.server_url = kwargs.get("mcp_server_url", "http://localhost:8080")
         
         # 2. 获取 worker_id
         if "worker_id" in kwargs:
@@ -398,9 +401,9 @@ class HttpMCPEnv:
     def get_system_prompt(self, task_question: Optional[str] = None, **kwargs) -> str:
         action_space = self.get_action_space()
         if action_space is None:
-            prompt_template = load_system_prompt(environment_mode=self.mode)
+            prompt_template = get_system_prompt(environment_mode=self.mode)
         else:
-            prompt_template = load_system_prompt(
+            prompt_template = get_system_prompt(
                 environment_mode=self.mode, action_space=action_space
             )
 
