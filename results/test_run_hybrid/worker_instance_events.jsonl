@@ -1,4 +1,6 @@
-{"timestamp": "2025-12-04T01:43:23.042586", "worker_id": "worker-1", "instance_id": "worker-1", "task_id": "hybrid-001", "action": "allocate"}
-{"timestamp": "2025-12-04T01:43:27.321610", "worker_id": "worker-1", "instance_id": "worker-1", "task_id": "hybrid-001", "action": "release"}
-{"timestamp": "2025-12-04T01:48:28.722048", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "hybrid-003", "action": "allocate"}
-{"timestamp": "2025-12-04T01:48:32.384992", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "hybrid-003", "action": "release"}
+{"timestamp": "2025-12-04T04:41:37.716415", "worker_id": "worker-1", "instance_id": "worker-1", "task_id": "hybrid-002", "action": "allocate"}
+{"timestamp": "2025-12-04T04:41:37.720195", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "hybrid-001", "action": "allocate"}
+{"timestamp": "2025-12-04T04:41:41.787157", "worker_id": "worker-1", "instance_id": "worker-1", "task_id": "hybrid-002", "action": "release"}
+{"timestamp": "2025-12-04T04:41:42.312553", "worker_id": "worker-2", "instance_id": "worker-2", "task_id": "hybrid-001", "action": "release"}
+{"timestamp": "2025-12-04T04:43:04.808565", "worker_id": "worker-3", "instance_id": "worker-3", "task_id": "hybrid-003", "action": "allocate"}
+{"timestamp": "2025-12-04T04:43:09.581965", "worker_id": "worker-3", "instance_id": "worker-3", "task_id": "hybrid-003", "action": "release"}

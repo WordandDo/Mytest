@@ -12,39 +12,20 @@ from datetime import datetime
 from tools.tool import Tool
 from envs.data_models import Observation, TrajectoryStep, TaskTrajectory
 from prompts.system_prompts import get_system_prompt as load_system_prompt
-from utils.resource_manager import ResourceManager
 
 # 引入 MCP SDK
 from mcp.types import CallToolResult
 # 引入新的 MCP SSE 客户端
 from utils.mcp_sse_client import MCPSSEClient
 
+# [新增] 引入任务超时监控工具
+from utils.task_timeout import TaskTimeoutMonitor, TaskTimeoutError, check_execution_timeout
+
 import openai
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 
 logger = logging.getLogger(__name__)
 
-# --- 资源生命周期映射表 ---
-RESOURCE_LIFECYCLE_MAP = {
-    "vm_computer_13": {
-        "alloc": "setup_vm_session",
-        "release": "teardown_environment",
-        "alloc_args": ["config_name", "task_id"],
-        "init_param_name": "init_script"
-    },
-    "vm_pyautogui": {
-        "alloc": "setup_vm_session",
-        "release": "teardown_environment",
-        "alloc_args": ["config_name", "task_id"],
-        "init_param_name": "init_script"
-    },
-    "rag": {
-        "alloc": "setup_rag_session",
-        "release": "release_rag_session",
-        "alloc_args": [],
-        "init_param_name": "rag_config"
-    }
-}
 
 class HttpMCPEnv:
     """
@@ -56,10 +37,9 @@ class HttpMCPEnv:
     # 开启重型资源模式，通知框架在 run_task 前后调用 allocate/release
     has_heavy_resource = True 
 
-    def __init__(self, 
+    def __init__(self,
                  model_name: str = "gpt-4.1-2025-04-14",
-                 resource_manager: Optional['ResourceManager'] = None,
-                 parallel_degree=1, 
+                 parallel_degree=1,
                  **kwargs):
         
         # --- 原 Environment.__init__ 的逻辑 ---
@@ -70,17 +50,6 @@ class HttpMCPEnv:
         self.tools: Dict[str, Tool] = {}
         self.tool_schemas: List[Dict[str, Any]] = []
         self.tool_descriptions: str = ""
-        
-        # 资源管理
-        if resource_manager is None:
-            # 尝试导入 NoResourceManager，这里为了解耦假设 utils.resource_manager 可用
-            try:
-                from utils.resource_manager import NoResourceManager
-                self._resource_manager = NoResourceManager()
-            except ImportError:
-                self._resource_manager = None
-        else:
-            self._resource_manager = resource_manager
 
         # --- 原 HttpMCPEnv.__init__ 的逻辑 ---
         
@@ -101,12 +70,13 @@ class HttpMCPEnv:
         # 4. 加载 Gateway 配置
         config_path = kwargs.get("gateway_config_path", "gateway_config.json")
         self.modules_config = self._load_gateway_config(config_path)
-        
+
         # 解析出需要管理的资源类型列表
+        # 直接从配置中读取启用的资源类型，无需映射表
         self.active_resources = [
-            m.get("resource_type") 
+            m.get("resource_type")
             for m in self.modules_config.get("modules", [])
-            if m.get("resource_type") in RESOURCE_LIFECYCLE_MAP
+            if m.get("resource_type")  # 只要有定义资源类型即可
         ]
         
         # 初始化状态变量
@@ -126,10 +96,6 @@ class HttpMCPEnv:
     @property
     def mode(self) -> str:
         return "http_mcp"
-    
-    @property
-    def resource_manager(self) -> Any:
-        return self._resource_manager
 
     # =========================================================================
     # 核心 Agent 执行逻辑 (从 Environment 迁移)
@@ -138,14 +104,21 @@ class HttpMCPEnv:
     def run_task(self, task: Dict[str, Any], agent_config: Dict[str, Any], logger: logging.Logger) -> Dict[str, Any]:
         """
         执行完整的 Agent 任务循环
+        [第2层超时] 在任务级别监控执行时间，超时自动抛出异常
         """
         task_id = task.get("id", "unknown")
         question = task.get("question", "")
-        
+
         # 获取 Agent 配置参数
         model_name = agent_config.get("model_name", self.model_name)
         max_turns = agent_config.get("max_turns", 3)
         max_retries = agent_config.get("max_retries", 3)
+
+        # [第2层超时] 获取任务超时配置，默认600秒
+        task_timeout = float(
+            agent_config.get("task_timeout",
+            os.environ.get("TASK_EXECUTION_TIMEOUT", "600"))
+        )
 
         # 获取任务输出目录（如果实现了该方法）
         task_output_dir = None
@@ -156,44 +129,79 @@ class HttpMCPEnv:
                 model_name
             )
 
-        # 执行对话
-        messages = self._run_conversation(question, model_name, max_turns, max_retries, logger)
-        
-        # 提取答案
-        final_answer = self._extract_final_answer(messages)
+        # [第2层超时] 使用超时监控器
+        monitor = TaskTimeoutMonitor(task_timeout, task_id, self.worker_id)
 
-        # 构建结果
-        result = {
-            "task_id": task_id,
-            "question": question,
-            "answer": final_answer,
-            "messages": messages,
-            "success": True,
-            "error": None,
-        }
+        try:
+            # 启动超时监控
+            monitor.start()
 
-        # 保存日志 (如果支持)
-        if task_output_dir:
-            self._save_conversation_log(
-                task_output_dir,
-                task_id,
-                question,
-                model_name,
-                messages,
-                result
+            # 执行对话（将start_time和timeout传递给对话函数用于定期检查）
+            messages = self._run_conversation(
+                question, model_name, max_turns, max_retries, logger,
+                task_timeout=task_timeout,
+                task_start_time=time.time()
             )
 
-        return result
+            # 提取答案
+            final_answer = self._extract_final_answer(messages)
 
-    def _run_conversation(self, 
-                         question: str, 
-                         model_name: str, 
-                         max_turns: int, 
-                         max_retries: int, 
-                         logger: logging.Logger
+            # 构建结果
+            result = {
+                "task_id": task_id,
+                "question": question,
+                "answer": final_answer,
+                "messages": messages,
+                "success": True,
+                "error": None,
+            }
+
+            # 保存日志 (如果支持)
+            if task_output_dir:
+                self._save_conversation_log(
+                    task_output_dir,
+                    task_id,
+                    question,
+                    model_name,
+                    messages,
+                    result
+                )
+
+            return result
+
+        except TaskTimeoutError as e:
+            # 任务超时异常
+            logger.error(f"❌ [TaskTimeout] Task {task_id} timeout: {e}")
+            return {
+                "task_id": task_id,
+                "question": question,
+                "answer": "",
+                "messages": [],
+                "success": False,
+                "error": f"Task execution timeout: {e}",
+            }
+
+        except Exception as e:
+            # 其他异常
+            logger.error(f"❌ [TaskError] Task {task_id} failed: {e}")
+            raise
+
+        finally:
+            # 取消超时监控
+            monitor.cancel()
+
+    def _run_conversation(self,
+                         question: str,
+                         model_name: str,
+                         max_turns: int,
+                         max_retries: int,
+                         logger: logging.Logger,
+                         task_timeout: Optional[float] = None,
+                         task_start_time: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         """
         执行 Agent 对话循环
+        [第2层超时] 在每次循环前检查任务是否超时
         """
         system_prompt = self.get_system_prompt(question)
         messages: List[ChatCompletionMessageParam] = [
@@ -202,7 +210,7 @@ class HttpMCPEnv:
 
         # 构建用户消息
         user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"Question: {question}\n"}]
-        
+
         # 注入初始观察
         initial_obs = getattr(self, "initial_observation", None)
         if initial_obs and isinstance(initial_obs, dict):
@@ -210,7 +218,7 @@ class HttpMCPEnv:
             screenshot_b64 = initial_obs.get("screenshot")
             if screenshot_b64:
                 user_content.append({
-                    "type": "text", 
+                    "type": "text",
                     "text": "Here is the initial screen state of the computer:"
                 })
                 user_content.append({
@@ -220,7 +228,7 @@ class HttpMCPEnv:
                         "detail": "high"
                     }
                 })
-            
+
             # 添加 Accessibility Tree
             a11y_tree = initial_obs.get("accessibility_tree")
             if a11y_tree:
@@ -235,6 +243,14 @@ class HttpMCPEnv:
         turn_count = 0
 
         while turn_count < max_turns:
+            # [第2层超时] 在每轮开始前检查是否超时
+            if task_timeout and task_start_time:
+                if check_execution_timeout(task_start_time, task_timeout, "current_task", self.worker_id):
+                    raise TaskTimeoutError(
+                        f"Task timeout after {time.time() - task_start_time:.1f}s "
+                        f"(limit: {task_timeout}s) at turn {turn_count}"
+                    )
+
             retry = 0
             while retry < max_retries:
                 try:
@@ -245,7 +261,7 @@ class HttpMCPEnv:
                         messages=messages,
                         tools=self.get_tool_schemas(),
                     )
-                    
+
                     if not hasattr(response, "choices") or not response.choices:
                         raise ValueError("OpenAI API returned empty response")
 
@@ -262,13 +278,13 @@ class HttpMCPEnv:
                         for tool_call in assistant_message.tool_calls: # 处理所有 call 而不仅仅是 [:1]
                             tool_name = tool_call.function.name
                             tool_args = json.loads(tool_call.function.arguments)
-                            
+
                             print(f"Round {turn_count}: 🔧 Using tool: {tool_name}")
                             print(f"Round {turn_count}:    Arguments: {tool_args}")
-                            
+
                             # 【关键修改】直接调用 execute_tool，它现在适配了 MCP
                             tool_output = self.execute_tool(tool_name, tool_args)
-                            
+
                             # 解析标准化输出
                             if isinstance(tool_output, dict) and "images" in tool_output:
                                 content_str = tool_output.get("text", "")
@@ -278,12 +294,12 @@ class HttpMCPEnv:
                                 image_list = []
 
                             print(f"Round {turn_count}:    Result: {content_str[:100]}... (Images: {len(image_list)})")
-                            
+
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
                                 "name": tool_name,
-                                "content": content_str 
+                                "content": content_str
                             })
 
                             # 注入 Vision 观察
@@ -403,13 +419,30 @@ class HttpMCPEnv:
         if not hasattr(self, '_openai_client') or self._openai_client is None:
             api_key = self.config.get("openai_api_key") or os.environ.get("OPENAI_API_KEY", "")
             base_url = self.config.get("openai_api_url") or os.environ.get("OPENAI_API_URL") or os.environ.get("OPENAI_API_BASE")
-            
+
+            # [第1层超时] API调用超时配置
+            # 单次API请求的超时时间，默认30秒
+            timeout = float(self.config.get("openai_timeout", os.environ.get("OPENAI_TIMEOUT", "30")))
+            # API请求失败后的最大重试次数，默认2次
+            max_retries = int(self.config.get("openai_max_retries", os.environ.get("OPENAI_MAX_RETRIES", "2")))
+
+            logger.info(f"[{self.worker_id}] Initializing OpenAI client with timeout={timeout}s, max_retries={max_retries}")
+
             openai.api_key = api_key
             if base_url:
                 openai.base_url = base_url
-                self._openai_client = openai.OpenAI(api_key=api_key, base_url=base_url)
+                self._openai_client = openai.OpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=timeout,
+                    max_retries=max_retries
+                )
             else:
-                self._openai_client = openai.OpenAI(api_key=api_key)
+                self._openai_client = openai.OpenAI(
+                    api_key=api_key,
+                    timeout=timeout,
+                    max_retries=max_retries
+                )
         return self._openai_client
 
     # =========================================================================
@@ -514,34 +547,39 @@ class HttpMCPEnv:
         if not self._tools_initialized:
             logger.info(f"[{self.worker_id}] Skipping tool initialization before connection is established")
             return
-            
+
         try:
             logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
             mcp_tools = self._list_tools_sync()
-            
-            blacklist = set()
-            blacklist.add("get_observation")
-            blacklist.add("evaluate_task")
-            
-            for res_type in self.active_resources:
-                lifecycle = RESOURCE_LIFECYCLE_MAP.get(res_type)
-                if lifecycle:
-                    blacklist.add(lifecycle["alloc"])
-                    blacklist.add(lifecycle["release"])
-            
+
+            # 黑名单：Agent 不应直接调用的系统工具
+            blacklist = {
+                # 旧的评估和观察工具（已废弃或由系统自动调用）
+                "get_observation",
+                "evaluate_task",
+                # 资源生命周期管理工具（由系统统一调用，Agent 不应直接使用）
+                "allocate_batch_resources",
+                "setup_batch_resources",
+                "get_batch_initial_observations",
+                "setup_vm_session",
+                "setup_rag_session",
+                "teardown_environment",
+                "release_rag_session",
+            }
+
             valid_tools = [t for t in mcp_tools if t.name not in blacklist]
-            
+
             self.tool_schemas = [self._convert_mcp_tool_to_openai(t) for t in valid_tools]
-            
+
             descriptions = []
             for t in valid_tools:
                 desc = t.description if t.description else "No description provided."
                 descriptions.append(f"- {t.name}: {desc}")
-            
+
             self.tool_descriptions = "\n".join(descriptions)
-                
+
             logger.info(f"[{self.worker_id}] Initialized {len(valid_tools)} tools (Metadata only). Blacklisted: {len(blacklist)}")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize tools: {e}")
             self.tool_schemas = []
@@ -644,18 +682,6 @@ class HttpMCPEnv:
             logger.error(f"Failed to parse MCP response: {e}")
             return {"status": "error", "message": str(e)}
 
-    def _log_alloc_failure(self, worker_id: str, res_type: str, data: Dict[str, Any], attempt: int):
-        error_msg = data.get("error", "Unknown error")
-        logger.warning(f"Worker [{worker_id}] failed to allocate {res_type} (attempt {attempt+1}): {error_msg}")
-
-    def _setup_single_resource(self, res_type: str, res_data: dict):
-        self.allocated_resources[res_type] = res_data
-        if res_type == "vm":
-            self.vm_ip = res_data.get("ip")
-            self.vm_port = res_data.get("port")
-        elif res_type == "rag":
-            self.rag_endpoint = res_data.get("endpoint")
-            #self.rag_endpoint = res_data.get("endpoint")
 
     def get_inital_obs(self) -> Dict[str, Any]:
         logger.info(f"[{self.worker_id}] Fetching batch initial observations from MCP...")
@@ -683,71 +709,23 @@ class HttpMCPEnv:
             return combined_obs
 
     def allocate_resource(self, worker_id: str, resource_init_data: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        统一的资源分配入口函数
+
+        Args:
+            worker_id: Worker ID
+            resource_init_data: 资源初始化配置数据
+
+        Returns:
+            分配是否成功
+        """
         resource_init_data = resource_init_data or {}
         logger.info(f"Worker [{worker_id}] requesting resources: {self.active_resources}...")
-        
+
         self.initial_observation = None
-        
-        if len(self.active_resources) > 1:
-            return self._allocate_resources_atomically(resource_init_data)
-        
-        retry_interval = 5
-        max_retries = 100 
-        
-        for attempt in range(max_retries):
-            allocated_stack = []
-            all_success = True
-            
-            for res_type in self.active_resources:
-                lifecycle = RESOURCE_LIFECYCLE_MAP.get(res_type)
-                if not lifecycle: continue
-                
-                tool_name = lifecycle["alloc"]
-                args = {"worker_id": worker_id}
-                if res_type == "vm":
-                    args["config_name"] = self.config_name
-                    args["task_id"] = "dynamic_alloc"
-                
-                if res_type in resource_init_data:
-                    param_name = lifecycle.get("init_param_name") 
-                    if param_name:
-                        config_content = resource_init_data[res_type].get("content", "")
-                        if isinstance(config_content, (dict, list)):
-                            config_content = json.dumps(config_content)
-                        args[param_name] = config_content
-                
-                try:
-                    res: CallToolResult = self._call_tool_sync(tool_name, args)  # type: ignore
-                    data = self._parse_mcp_response(res)
-                    
-                    if data.get("status") != "success":
-                        self._log_alloc_failure(worker_id, res_type, data, attempt)
-                        all_success = False
-                        break
-                    
-                    self.allocated_resources[res_type] = data
-                    allocated_stack.append(res_type)
-                    if attempt == 0:
-                        logger.info(f"Worker [{worker_id}] ✅ {res_type} acquired.")
-                except Exception as e:
-                    logger.error(f"Alloc exception for {res_type}: {e}")
-                    all_success = False
-                    break
-            
-            if all_success:
-                return True
-            else:
-                if allocated_stack:
-                    logger.warning(f"Worker [{worker_id}] Rolling back resources: {allocated_stack[::-1]}")
-                    for res_type in reversed(allocated_stack):
-                        lifecycle = RESOURCE_LIFECYCLE_MAP[res_type]
-                        try:
-                            self._call_tool_sync(lifecycle["release"], {"worker_id": worker_id})
-                        except Exception as e:
-                            logger.error(f"Rollback failed for {res_type}: {e}")
-                time.sleep(retry_interval)
-        
-        return False
+
+        # 统一使用原子化批量分配
+        return self._allocate_resources_atomically(resource_init_data)
 
     def _allocate_resources_atomically(self, resource_init_data: Dict[str, Any]) -> bool:
         """
@@ -768,77 +746,63 @@ class HttpMCPEnv:
                  return False
 
             # 2. 保存资源信息
-            for r_type, r_data in data.items():
-                self._setup_single_resource(r_type, r_data)
+            self.allocated_resources = data
 
-            # ================= [修复点：传递分配信息给初始化函数] =================
             # 3. 执行资源初始化 (Setup)
-            # 将原子分配返回的资源信息（包含 token 等）传递给 setup_batch_resources
             if resource_init_data:
                 logger.info(f"[{self.worker_id}] Setting up resources...")
+                setup_res = self._call_tool_sync("setup_batch_resources", {
+                    "resource_init_configs": resource_init_data,
+                    "allocated_resources": data
+                })
+                setup_result = self._parse_mcp_response(setup_res)
 
-                # 将分配信息注入到初始化配置中
-                if not self._setup_resources_logic(self.worker_id, resource_init_data, data):
-                    logger.error(f"[{self.worker_id}] Resource setup failed!")
-                    # 初始化失败应当回滚释放资源
+                if setup_result.get("status") not in ["success", "partial_error"]:
+                    logger.error(f"[{self.worker_id}] Resource setup failed: {setup_result}")
                     self.release_resource(self.worker_id)
                     return False
-            # ==========================================================
 
+            # 4. 获取初始观察
+            self.get_inital_obs()
             return True
+
         except Exception as e:
             logger.error(f"Failed to allocate resources atomically via MCP: {e}")
             return False
 
-    def _setup_resources_logic(self, worker_id: str, init_data: Dict[str, Any], allocated_resources: Dict[str, Any] = None) -> bool:
+    def release_resource(self, worker_id: str, reset: bool = True) -> None:
         """
-        调用 MCP 工具执行资源初始化
+        统一释放所有已分配的资源
+
+        通过 Resource API 统一释放，MCP Server 端会自动调用相应的 teardown/release 工具
 
         Args:
             worker_id: Worker ID
-            init_data: 初始化配置数据
-            allocated_resources: 原子分配返回的资源信息（包含 token 等）
+            reset: 是否重置资源状态（保留参数以兼容旧接口）
         """
-        try:
-            call_args = {
-                "worker_id": worker_id,
-                "resource_init_configs": init_data
-            }
+        logger.info(f"Worker [{worker_id}] releasing all resources...")
 
-            # [修复] 如果提供了分配信息，一并传递给 setup_batch_resources
-            if allocated_resources:
-                call_args["allocated_resources"] = allocated_resources
-
-            res = self._call_tool_sync("setup_batch_resources", call_args)
-            data = self._parse_mcp_response(res)
-            return data.get("status") == "success"
-        except Exception as e:
-            logger.error(f"Failed to setup resources for worker {worker_id}: {e}")
-            return False
-
-    def release_resource(self, worker_id: str, reset: bool = True) -> None:
-        logger.info(f"Worker [{worker_id}] releasing resources...")
-        for res_type in reversed(self.active_resources):
-            lifecycle = RESOURCE_LIFECYCLE_MAP.get(res_type)
-            if lifecycle:
+        # 遍历已分配的资源并逐一释放
+        for res_type, res_data in list(self.allocated_resources.items()):
+            resource_id = res_data.get("id")
+            if resource_id:
                 try:
-                    self._call_tool_sync(lifecycle["release"], {"worker_id": worker_id})
+                    # 直接调用 Resource API 释放，通过 MCP 同步调用
+                    # 注意：这里需要使用同步的方式调用
+                    import httpx
+                    with httpx.Client() as client:
+                        response = client.post(
+                            f"{os.environ.get('RESOURCE_API_URL', 'http://localhost:8000')}/release",
+                            json={"resource_id": resource_id, "worker_id": worker_id},
+                            timeout=10.0
+                        )
+                        logger.info(f"Released {res_type} (resource_id={resource_id}): {response.status_code}")
                 except Exception as e:
-                    logger.warning(f"{res_type} Release failed: {e}")
+                    logger.warning(f"Failed to release {res_type} (resource_id={resource_id}): {e}")
+
+        # 清空已分配资源记录
+        self.allocated_resources.clear()
+        logger.info(f"Worker [{worker_id}] resource cleanup completed")
 
     def get_allocated_resource_id(self) -> str:
         return self.worker_id
-
-    @classmethod
-    def setup_global_resources(cls, config: Any) -> Optional['ResourceManager']:
-        """
-        初始化全局资源 (从 Environment 迁移)
-        """
-        # 如果需要解耦，这里应避免直接导入 envs.enviroment 下的依赖，或者复制必要的代码
-        # 假设 utils.resource_manager 是独立的
-        try:
-            from utils.resource_manager import NoResourceManager, ResourceManager as BaseResourceManager
-            manager: BaseResourceManager = NoResourceManager()
-            return manager
-        except ImportError:
-            return None

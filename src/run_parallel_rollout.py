@@ -25,6 +25,9 @@ from benchmark import Benchmark
 from envs.enviroment import Environment
 from envs.factory import get_environment_class
 
+# [新增] 导入超时异常，用于worker捕获任务超时
+from utils.task_timeout import TaskTimeoutError
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -417,6 +420,19 @@ def run_rollout_worker(
                 logger.info(f"{status_icon} Worker {worker_id} FINISH Task {task_id} in {duration:.1f}s (Success: {result.get('success')})")
                 logger.info(f"Worker {worker_id} completed task {task_id}")
 
+            except TaskTimeoutError as e:
+                # [新增] 特殊处理任务超时异常
+                logger.error(f"⏰ Task {task_id} timeout: {e}")
+                failure_result = {
+                    "task_id": task_id,
+                    "question": task.get("question", ""),
+                    "answer": "",
+                    "messages": [],
+                    "success": False,
+                    "error": f"Task execution timeout: {e}",
+                }
+                if shared_results is not None:
+                    shared_results.append(failure_result)
             except Exception as e:
                 logger.error(f"Task {task_id} failed: {e}", exc_info=True)
                 failure_result = {

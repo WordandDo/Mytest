@@ -116,18 +116,32 @@ async def startup_event():
 async def monitor_resource_usage():
     """
     资源使用监控任务
-    定期输出各资源池的状态信息，便于监控系统运行状况
+    定期输出各资源池的状态信息，并检查超时占用的资源
     """
     logger.info("Starting resource usage monitor (interval=30s)...")
     while True:
         try:
             if manager:
+                # 打印资源池状态
                 stats = manager.get_status()
-                # [修改] 动态打印所有资源池状态
                 log_parts = ["📊 [Monitor]"]
                 for name, s in stats.items():
                     log_parts.append(f"{name.upper()}(Free:{s.get('free')}/{s.get('total')})")
                 logger.info(" ".join(log_parts))
+
+                # [第3层超时] 检查并回收超时占用的资源
+                try:
+                    for pool_name, pool in manager.pools.items():
+                        if hasattr(pool, 'check_and_reclaim_timeout_resources'):
+                            reclaimed = pool.check_and_reclaim_timeout_resources()
+                            if reclaimed:
+                                logger.warning(
+                                    f"⚠️ [Monitor] Reclaimed {len(reclaimed)} timeout resources "
+                                    f"from pool '{pool_name}': {[r['resource_id'] for r in reclaimed]}"
+                                )
+                except Exception as e:
+                    logger.error(f"❌ [Monitor] Error checking timeout resources: {e}", exc_info=True)
+
         except Exception as e:
             logger.error(f"Monitor error: {e}", exc_info=True)
         await asyncio.sleep(30)

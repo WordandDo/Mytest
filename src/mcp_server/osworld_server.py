@@ -194,7 +194,12 @@ async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_
     try:
         # 初始化控制器
         controller = PythonController(vm_ip=ip, server_port=port)
-        
+        import time
+        import asyncio
+        # 如果是 async 函数，建议使用 asyncio.sleep；如果是同步环境使用 time.sleep
+        # 由于该函数是 async def，建议使用 asyncio.sleep(3) 或 time.sleep(3)
+        # 注意：FastMCP 的 tool 运行在线程池中，time.sleep 是安全的
+        #time.sleep(3)  # <--- 增加这一行，时长可根据实际情况调整 (3~5秒)
         # 存入全局会话
         GLOBAL_SESSIONS[worker_id] = {
             "controller": controller,

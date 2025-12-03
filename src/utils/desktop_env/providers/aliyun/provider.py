@@ -166,71 +166,102 @@ class AliyunProvider(Provider):
             )
             raise
 
-
     def revert_to_snapshot(self, path_to_vm: str, snapshot_name: str):
-        logger.info(
-            f"Reverting Aliyun ECS instance to snapshot image: {snapshot_name} (In-place Rollback)..."
-        )
+        logger.info(f"Reverting Aliyun ECS instance to snapshot: {snapshot_name}...")
+
+        # --- 尝试策略 A: 快速回滚 (ResetDisk) ---
+        if snapshot_name and snapshot_name.startswith("s-"):
+            logger.info(f"⚡ Attempting FAST ROLLBACK (ResetDisk) with snapshot {snapshot_name}...")
+            try:
+                # 1. 确保实例处于稳定状态
+                self._wait_until_instance_stable(path_to_vm)
+                
+                # 2. 停止实例 (Stop Instance)
+                status = self._get_instance_status(path_to_vm)
+                if status == "Running":
+                    logger.info(f"Stopping instance {path_to_vm} before disk rollback...")
+                    stop_req = ecs_models.StopInstanceRequest(instance_id=path_to_vm, force_stop=True)
+                    self.client.stop_instance(stop_req)
+                    self._wait_for_instance_status(path_to_vm, "Stopped") 
+                elif status != "Stopped":
+                    self._wait_for_instance_status(path_to_vm, "Stopped") 
+                
+                # 3. 获取系统盘 ID
+                system_disk_id = self._get_system_disk_id(path_to_vm)
+                
+                # 4. 执行云盘回滚
+                logger.info(f"Rolling back disk {system_disk_id} using snapshot ID {snapshot_name}...")
+                reset_disk_req = ecs_models.ResetDiskRequest(
+                    disk_id=system_disk_id,
+                    snapshot_id=snapshot_name
+                )
+                self.client.reset_disk(reset_disk_req)
+                
+                # 等待回滚完成
+                self._wait_for_disk_status(system_disk_id, target_status="In_use")
+
+                # 5. 启动实例
+                logger.info(f"Starting instance {path_to_vm} after disk rollback...")
+                start_req = ecs_models.StartInstanceRequest(instance_id=path_to_vm)
+                self.client.start_instance(start_req)
+                
+                # 6. 等待就绪
+                _wait_for_instance_running(self.client, path_to_vm)
+                
+                # 更新 IP 记录
+                ip_address = self.get_ip_address(path_to_vm)
+                if ip_address:
+                    try:
+                        from utils.instance_tracker import get_instance_tracker
+                        tracker = get_instance_tracker()
+                        tracker.record_instance_ip(path_to_vm, ip_address) 
+                    except Exception as e:
+                        logger.warning(f"Failed to record instance IP: {e}")
+
+                return path_to_vm
+
+            except Exception as e:
+                logger.warning(f"⚠️ Fast rollback failed (Snapshot: {snapshot_name}): {e}")
+                logger.warning("🔄 Falling back to DELETE & RECREATE strategy...")
+                # 这里不 raise，而是让代码继续向下执行，进入策略 B
         
-        new_instance_id = path_to_vm # In-place revert preserves the instance ID.
+        else:
+            logger.info(f"🐢 Snapshot name '{snapshot_name}' is not a valid ID format. Using DELETE & RECREATE strategy.")
 
+        # --- 尝试策略 B: 慢速重建 (Delete & Recreate) ---
+        # 如果策略 A 成功，上面已经 return 了，不会执行到这里
+        # 如果策略 A 失败（或者根本没尝试），则执行这里
+        
         try:
-            # 1. 确保实例处于稳定状态
-            self._wait_until_instance_stable(path_to_vm)
-            
-            # 2. 停止实例 (Stop Instance) - 阿里云要求实例停止才能回滚云盘
-            status = self._get_instance_status(path_to_vm)
-            if status == "Running":
-                logger.info(f"Stopping instance {path_to_vm} before disk rollback...")
-                stop_req = ecs_models.StopInstanceRequest(instance_id=path_to_vm, force_stop=True)
-                self.client.stop_instance(stop_req)
-                self._wait_for_instance_status(path_to_vm, "Stopped") 
-            elif status != "Stopped":
-                # 如果处于 Stopping 或其他状态，等待其达到 Stopped
-                self._wait_for_instance_status(path_to_vm, "Stopped") 
-            
-            # 3. 获取系统盘 ID (Get System Disk ID)
-            system_disk_id = self._get_system_disk_id(path_to_vm)
-            
-            # 4. 执行云盘回滚 (Reset Disk)
-            logger.info(f"Rolling back disk {system_disk_id} using snapshot ID {snapshot_name}...")
-            reset_disk_req = ecs_models.ResetDiskRequest(
-                disk_id=system_disk_id,
-                snapshot_id=snapshot_name
-            )
-            self.client.reset_disk(reset_disk_req)
-            logger.info(f"Disk rollback requested for {system_disk_id}. Waiting for completion...")
+            # Step 1: 确保旧实例状态稳定以便删除
+            try:
+                self._wait_until_instance_stable(path_to_vm)
+            except Exception as e:
+                logger.warning(f"Wait for stable failed ({e}), attempting force delete anyway...")
 
-            # 【关键修复】等待云盘回滚完成 (状态变为 In_use)
-            # 只有云盘恢复到 In_use 状态，实例才能被启动
-            self._wait_for_disk_status(system_disk_id, target_status="In_use")
+            # Step 2: 删除旧实例
+            self._delete_instance_with_retries(path_to_vm)
 
-            # 5. 启动实例 (Start Instance)
-            logger.info(f"Starting instance {path_to_vm} after disk rollback...")
-            start_req = ecs_models.StartInstanceRequest(instance_id=path_to_vm)
-            self.client.start_instance(start_req)
+            # Step 3: 基于基础镜像创建新实例
+            new_instance_id = _allocate_vm()
+            logger.info(f"Instance {new_instance_id} recreated successfully.")
+
+            # 获取新实例 IP
+            ip_address = self.get_ip_address(new_instance_id)
             
-            # 6. 等待实例运行并检查桌面服务就绪
-            _wait_for_instance_running(self.client, path_to_vm)
-            
-            # 7. 获取 IP 并等待桌面服务就绪 (IP可能会变，但实例ID不变)
-            ip_address = self.get_ip_address(path_to_vm)
-            
-            # 8. 记录 IP 地址
             if ip_address:
                 try:
                     from utils.instance_tracker import get_instance_tracker
                     tracker = get_instance_tracker()
-                    tracker.record_instance_ip(path_to_vm, ip_address) 
+                    tracker.record_instance_ip(new_instance_id, ip_address)
                 except Exception as e:
                     logger.warning(f"Failed to record instance IP: {e}")
 
-            return new_instance_id # 返回原始实例 ID
-            
+            return new_instance_id
+
         except Exception as e:
-            logger.error(
-                f"Failed to revert to snapshot {snapshot_name} for the instance {path_to_vm} using in-place rollback: {str(e)}"
-            )
+            # 如果连重建都失败了，那就是真的失败了
+            logger.error(f"❌ Both rollback strategies failed for {path_to_vm}: {str(e)}")
             raise
 
     def stop_emulator(self, path_to_vm: str, region: str = None):
