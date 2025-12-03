@@ -5,6 +5,7 @@ import base64
 import json
 import httpx
 import asyncio
+import logging
 from typing import Optional, List, Any, Union, Callable
 from dotenv import load_dotenv
 
@@ -21,6 +22,9 @@ from src.utils.desktop_env.controllers.python import PythonController
 # [新增] 导入注册表
 from mcp_server.core.registry import ToolRegistry
 
+# 设置日志
+logger = logging.getLogger("OSWorldServer")
+
 mcp = FastMCP("OSWorld Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 
@@ -30,67 +34,90 @@ print(f"🚀 Starting OSWorld MCP Server (Registry Mode)")
 GLOBAL_SESSIONS = {}
 
 # [新增] VM初始化函数
-async def vm_initialization(worker_id: str, config_content: str = "") -> bool:
+async def vm_initialization(worker_id: str, config_content = None) -> bool:
     """
     VM资源初始化函数，用于解析Benchmark特有的数据结构并执行初始化操作
-    
+
     Args:
         worker_id: 工作进程ID
-        config_content: 初始化配置内容，可能是JSON格式或纯脚本
-        
+        config_content: 初始化配置内容，可能是dict、JSON字符串或纯脚本字符串
+
     Returns:
         bool: 初始化是否成功
     """
     # 防御性编程：无配置即成功
     if not config_content:
+        logger.info(f"[{worker_id}] VM initialization skipped: no config_content provided")
         return True
-    
+
     try:
+        logger.info(f"[{worker_id}] VM initialization started. config_content type: {type(config_content)}")
+
         session = GLOBAL_SESSIONS.get(worker_id)
         if not session or not session.get("controller"):
             # Session未找到，尝试调用 setup_vm_session 工具进行初始化
             # 注意：setup_vm_session 需要 config_name 和 task_id，此处作为自动初始化使用默认占位符
             try:
+                # 如果 config_content 是 dict，转为 JSON 字符串
+                init_script = json.dumps(config_content) if isinstance(config_content, dict) else config_content
+                logger.info(f"[{worker_id}] Session not found, calling setup_vm_session")
                 result_json = await setup_vm_session(
-                    config_name="auto_init", 
-                    task_id="unknown", 
-                    worker_id=worker_id, 
-                    init_script=config_content
+                    config_name="auto_init",
+                    task_id="unknown",
+                    worker_id=worker_id,
+                    init_script=init_script
                 )
                 result = json.loads(result_json)
-                return result.get("status") == "success"
+                success = result.get("status") == "success"
+                logger.info(f"[{worker_id}] setup_vm_session result: {success}")
+                return success
             except Exception as e:
-                print(f"Auto setup_vm_session failed for {worker_id}: {e}")
+                logger.error(f"[{worker_id}] Auto setup_vm_session failed: {e}", exc_info=True)
                 return False
-        
+
         # 如果 Session 存在，则手动执行配置逻辑
         controller = session["controller"]
-        
-        # 判断是否是JSON格式的任务规范
-        if config_content.strip().startswith("{"):
-            # Case A: 传入的是 OSWorld 任务规范 (JSON)
+        logger.info(f"[{worker_id}] Found existing session with controller")
+
+        # [修复] 统一处理 config_content 可能是 dict 或 str 的情况
+        if isinstance(config_content, dict):
+            # Case A: 传入的是 dict 对象 (直接就是任务规范)
+            logger.info(f"[{worker_id}] Processing config_content as dict")
+            task_spec = config_content
+        elif isinstance(config_content, str) and config_content.strip().startswith("{"):
+            # Case B: 传入的是 JSON 字符串
+            logger.info(f"[{worker_id}] Processing config_content as JSON string")
             try:
                 task_spec = json.loads(config_content)
-                setup_steps = task_spec.get("config", [])
-                evaluator = task_spec.get("evaluator", {})
-                
-                # 执行 config 中的每一步 (download, execute 等)
-                if setup_steps:
-                    from src.utils.desktop_env.controllers.setup import execute_setup_steps
-                    execute_setup_steps(controller, setup_steps)
-                
-                # 将 evaluator 缓存到 GLOBAL_SESSIONS 中供后续 evaluate_task 使用
-                GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
-                
             except json.JSONDecodeError as e:
+                logger.error(f"[{worker_id}] Invalid JSON in init_script: {e}")
                 raise RuntimeError(f"Invalid JSON in init_script: {e}")
         else:
-            # Case B: 传入的是纯 Python 脚本 (如 Math/Web 任务)
+            # Case C: 传入的是纯 Python 脚本字符串
+            logger.info(f"[{worker_id}] Processing config_content as Python script")
             controller.execute_python_command(config_content)
-            
+            logger.info(f"[{worker_id}] VM initialization completed (script executed)")
+            return True
+
+        # 处理任务规范 (来自 Case A 或 Case B)
+        setup_steps = task_spec.get("config", [])
+        evaluator = task_spec.get("evaluator", {})
+        logger.info(f"[{worker_id}] Task spec extracted: {len(setup_steps)} setup steps, evaluator present: {bool(evaluator)}")
+
+        # 执行 config 中的每一步 (download, execute 等)
+        if setup_steps:
+            logger.info(f"[{worker_id}] Executing {len(setup_steps)} setup steps")
+            from src.utils.desktop_env.controllers.setup import execute_setup_steps
+            execute_setup_steps(controller, setup_steps)
+            logger.info(f"[{worker_id}] Setup steps completed")
+
+        # 将 evaluator 缓存到 GLOBAL_SESSIONS 中供后续 evaluate_task 使用
+        GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
+        logger.info(f"[{worker_id}] VM initialization completed successfully")
+
         return True
     except Exception as e:
-        print(f"VM initialization failed for worker {worker_id}: {e}")
+        logger.error(f"[{worker_id}] VM initialization failed: {e}", exc_info=True)
         return False
 
 def _get_controller(worker_id: str) -> PythonController:

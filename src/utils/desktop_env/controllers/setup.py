@@ -15,9 +15,11 @@ from typing import Dict, List
 
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive, GoogleDriveFile, GoogleDriveFileList
-from requests_toolbelt.multipart.encoder import MultipartEncoder
+# [延迟导入] pydrive 只在 _googledrive_setup 中使用，移到函数内部导入
+# from pydrive.auth import GoogleAuth
+# from pydrive.drive import GoogleDrive, GoogleDriveFile, GoogleDriveFileList
+# [延迟导入] requests_toolbelt 只在文件上传相关函数中使用，移到函数内部导入
+# from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 from utils.desktop_env.controllers.python import PythonController
 from utils.desktop_env.evaluators.metrics.utils import compare_urls
@@ -205,6 +207,13 @@ class SetupController:
                 "path": str, the path on the VM to store the downloaded file
               }
         """
+        # [延迟导入] 只在需要上传文件时才导入 requests_toolbelt
+        try:
+            from requests_toolbelt.multipart.encoder import MultipartEncoder
+        except ImportError as e:
+            logger.error(f"Failed to import requests_toolbelt: {e}")
+            raise ImportError("requests_toolbelt is required for file upload operations. Install it with: pip install requests-toolbelt") from e
+
         for f in files:
             url: str = f["url"]
             path: str = f["path"]
@@ -284,6 +293,13 @@ class SetupController:
                 "path": str, the path on the VM to store the downloaded file
               }
         """
+        # [延迟导入] 只在需要上传文件时才导入 requests_toolbelt
+        try:
+            from requests_toolbelt.multipart.encoder import MultipartEncoder
+        except ImportError as e:
+            logger.error(f"Failed to import requests_toolbelt: {e}")
+            raise ImportError("requests_toolbelt is required for file upload operations. Install it with: pip install requests-toolbelt") from e
+
         for f in files:
             local_path: str = f["local_path"]
             path: str = f["path"]
@@ -776,6 +792,14 @@ class SetupController:
                     path(str): remote url to download file
                     dest(List[str]): the path in the google drive to store the downloaded file
         """
+        # [延迟导入] 只在需要时才导入 pydrive
+        try:
+            from pydrive.auth import GoogleAuth
+            from pydrive.drive import GoogleDrive, GoogleDriveFile, GoogleDriveFileList
+        except ImportError as e:
+            logger.error(f"Failed to import pydrive: {e}. Please install it with: pip install pydrive")
+            raise ImportError("pydrive is required for Google Drive operations. Install it with: pip install pydrive") from e
+
         settings_file = config.get('settings_file', 'evaluation_examples/settings/googledrive/settings.yml')
         gauth = GoogleAuth(settings_file=settings_file)
         drive = GoogleDrive(gauth)
@@ -902,6 +926,13 @@ class SetupController:
             return browser, context
 
     def _update_browse_history_setup(self, **config):
+        # [延迟导入] 只在需要上传文件时才导入 requests_toolbelt
+        try:
+            from requests_toolbelt.multipart.encoder import MultipartEncoder
+        except ImportError as e:
+            logger.error(f"Failed to import requests_toolbelt: {e}")
+            raise ImportError("requests_toolbelt is required for file upload operations. Install it with: pip install requests-toolbelt") from e
+
         cache_path = os.path.join(self.cache_dir, "history_new.sqlite")
         db_url = "https://huggingface.co/datasets/xlangai/ubuntu_osworld_file_cache/resolve/main/chrome/44ee5668-ecd5-4366-a6ce-c1c9b8d4e938/history_empty.sqlite?download=true"
         if not os.path.exists(cache_path):

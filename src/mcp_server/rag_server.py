@@ -41,28 +41,26 @@ async def rag_initialization(worker_id: str, config_content: str = "") -> bool:
     try:
         # 解析配置
         config = json.loads(config_content) if isinstance(config_content, str) else config_content
-        
+
         # 获取知识库ID列表和top_k参数
         knowledge_base_ids = config.get("knowledge_base_ids", [])
         top_k = config.get("top_k", 3)
-        
+
         # 如果没有知识库需要设置，直接返回成功
         if not knowledge_base_ids:
             return True
-        
-        # 调用set_rag_context工具更新RAG上下文
-        # 这里应该调用相应的工具来设置知识库上下文
-        # 由于当前代码中没有看到set_rag_context工具，我们需要假设它存在或稍后实现
+
+        # 检查 RAG_SESSIONS 是否存在
         session = RAG_SESSIONS.get(worker_id)
         if not session:
-            raise RuntimeError(f"No active RAG session for worker: {worker_id}")
-        
+            raise RuntimeError(f"No active RAG session for worker: {worker_id}. Session must be registered before initialization.")
+
         # 将top_k存储到session中供后续查询使用
         session["config_top_k"] = top_k
-        
+
         # TODO: 实际调用设置知识库上下文的工具
         # 这可能需要与Resource API通信或直接调用相应的函数
-        
+
         return True
     except Exception as e:
         print(f"RAG initialization failed for worker {worker_id}: {e}")

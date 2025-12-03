@@ -10,6 +10,12 @@ LOG_DIR="logs"
 # 确保日志目录存在
 mkdir -p $LOG_DIR
 
+# [关键] 激活 conda 环境
+source /home/a1/tools/anaconda3/etc/profile.d/conda.sh
+conda activate osworld_rag_lb
+echo "🐍 Activated conda environment: osworld_rag_lb"
+echo "   Python: $(which python)"
+
 # 设置 Python 路径
 export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 

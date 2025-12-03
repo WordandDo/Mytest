@@ -14,7 +14,7 @@ logger = logging.getLogger("desktopenv.pycontroller")
 class PythonController:
     def __init__(self, vm_ip: str,
                  server_port: int,
-                 pkgs_prefix: str = "import pyautogui; import time; pyautogui.FAILSAFE = False; {command}",
+                 pkgs_prefix: str = "import pyautogui\nimport time\npyautogui.FAILSAFE = False\n{command}",
                  instance_id: Optional[str] = None):
         self.vm_ip = vm_ip
         self.instance_id = instance_id

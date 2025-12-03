@@ -762,7 +762,7 @@ class HttpMCPEnv:
             logger.info(f"Worker [{self.worker_id}] calling MCP tool 'allocate_batch_resources' via Gateway...")
             res = self._call_tool_sync("allocate_batch_resources", args)
             data = self._parse_mcp_response(res)
-            
+
             if isinstance(data, dict) and data.get("status") == "error":
                  logger.error(f"Atomic alloc tool failed: {data.get('message')}")
                  return False
@@ -770,16 +770,15 @@ class HttpMCPEnv:
             # 2. 保存资源信息
             for r_type, r_data in data.items():
                 self._setup_single_resource(r_type, r_data)
-            
-            # ================= [修复点：增加初始化逻辑] =================
+
+            # ================= [修复点：传递分配信息给初始化函数] =================
             # 3. 执行资源初始化 (Setup)
-            # 只有当 allocate 成功后，才利用 task metadata 进行初始化
+            # 将原子分配返回的资源信息（包含 token 等）传递给 setup_batch_resources
             if resource_init_data:
                 logger.info(f"[{self.worker_id}] Setting up resources...")
-                
-                # 直接使用 resource_init_data，无需映射 Key，
-                # 因为服务端已经有了 vm_pyautogui_server.py
-                if not self._setup_resources_logic(self.worker_id, resource_init_data):
+
+                # 将分配信息注入到初始化配置中
+                if not self._setup_resources_logic(self.worker_id, resource_init_data, data):
                     logger.error(f"[{self.worker_id}] Resource setup failed!")
                     # 初始化失败应当回滚释放资源
                     self.release_resource(self.worker_id)
@@ -791,12 +790,26 @@ class HttpMCPEnv:
             logger.error(f"Failed to allocate resources atomically via MCP: {e}")
             return False
 
-    def _setup_resources_logic(self, worker_id: str, init_data: Dict[str, Any]) -> bool:
+    def _setup_resources_logic(self, worker_id: str, init_data: Dict[str, Any], allocated_resources: Dict[str, Any] = None) -> bool:
+        """
+        调用 MCP 工具执行资源初始化
+
+        Args:
+            worker_id: Worker ID
+            init_data: 初始化配置数据
+            allocated_resources: 原子分配返回的资源信息（包含 token 等）
+        """
         try:
-            res = self._call_tool_sync("setup_batch_resources", {
-                "worker_id": worker_id, 
+            call_args = {
+                "worker_id": worker_id,
                 "resource_init_configs": init_data
-            })
+            }
+
+            # [修复] 如果提供了分配信息，一并传递给 setup_batch_resources
+            if allocated_resources:
+                call_args["allocated_resources"] = allocated_resources
+
+            res = self._call_tool_sync("setup_batch_resources", call_args)
             data = self._parse_mcp_response(res)
             return data.get("status") == "success"
         except Exception as e:

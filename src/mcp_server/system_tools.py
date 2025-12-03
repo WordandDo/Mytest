@@ -71,11 +71,16 @@ async def get_batch_initial_observations(worker_id: str) -> str:
 
 # [修改] 注册通用资源初始化工具
 @ToolRegistry.register_tool("system_resource")
-async def setup_batch_resources(worker_id: str, resource_init_configs: dict) -> str:
+async def setup_batch_resources(worker_id: str, resource_init_configs: dict, allocated_resources: dict = {}) -> str:
     """
     [通用系统工具] 动态初始化资源。
     自动根据 res_type 寻找 mcp_server.{res_type}_server 模块下的初始化函数。
     无需为新资源修改此代码。
+
+    Args:
+        worker_id: Worker ID
+        resource_init_configs: 初始化配置字典
+        allocated_resources: 原子分配返回的资源信息（可选，用于状态同步）
     """
     results = {}
     overall_success = True
@@ -83,18 +88,23 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict) -> 
     if not resource_init_configs:
         return json.dumps({"status": "success", "details": "No config provided"})
 
+    # [修复] 在初始化前，先同步资源状态到各模块的全局变量
+    if allocated_resources:
+        logger.info(f"[{worker_id}] Syncing allocated resources to module sessions...")
+        await _sync_resource_sessions(worker_id, allocated_resources)
+
     for res_type, config_wrapper in resource_init_configs.items():
         # 兼容两种格式: 直接传 content 或者 {"content": ...}
         content = config_wrapper.get("content") if isinstance(config_wrapper, dict) else config_wrapper
-        
+
         # 默认消息
         msg = "Skipped (No content)"
         success = True
 
         # === 动态加载逻辑 ===
+        module_name = f"mcp_server.{res_type}_server"
         try:
             # 1. 尝试动态导入模块 (例如: mcp_server.web_server)
-            module_name = f"mcp_server.{res_type}_server"
             module = importlib.import_module(module_name)
 
             # 2. 尝试获取初始化函数 (例如: web_initialization)
@@ -109,7 +119,7 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict) -> 
                 # 处理协程函数
                 if hasattr(result, '__await__'):
                     result = await result
-                    
+
                 if not result:
                     success = False
                     msg = f"{res_type} Init Failed"
@@ -136,3 +146,70 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict) -> 
         "status": "success" if overall_success else "partial_error",
         "details": results
     })
+
+
+async def _sync_resource_sessions(worker_id: str, allocated_resources: dict):
+    """
+    [内部函数] 将原子分配的资源信息同步到各模块的全局变量
+
+    Args:
+        worker_id: Worker ID
+        allocated_resources: 原子分配返回的资源字典，格式：
+            {
+                "rag": {"id": "...", "token": "...", ...},
+                "vm_pyautogui": {"id": "...", "ip": "...", "port": ..., ...}
+            }
+    """
+    # 同步 RAG 资源
+    if "rag" in allocated_resources:
+        rag_info = allocated_resources["rag"]
+        # 导入 RAG_SESSIONS 全局变量
+        from mcp_server.rag_server import RAG_SESSIONS
+
+        # 提取关键信息
+        resource_id = rag_info.get("id")
+        token = rag_info.get("token")
+
+        if resource_id and token:
+            RAG_SESSIONS[worker_id] = {
+                "resource_id": resource_id,
+                "token": token
+            }
+            logger.info(f"[{worker_id}] Synced RAG session: resource_id={resource_id}")
+        else:
+            logger.warning(f"[{worker_id}] RAG resource missing id or token: {rag_info}")
+
+    # 同步 VM 资源 - 创建 controller 对象
+    vm_types = ["vm", "vm_pyautogui", "vm_computer_13"]
+    for vm_type in vm_types:
+        if vm_type in allocated_resources:
+            vm_info = allocated_resources[vm_type]
+            logger.info(f"[{worker_id}] Syncing VM resource: {vm_type} -> {vm_info.get('id')}")
+
+            # 提取连接信息
+            vm_ip = vm_info.get("ip")
+            vm_port = vm_info.get("port", 5000)
+            env_id = vm_info.get("id")
+
+            if vm_ip and env_id:
+                try:
+                    # 导入必要的模块
+                    from mcp_server.osworld_server import GLOBAL_SESSIONS
+                    from src.utils.desktop_env.controllers.python import PythonController
+
+                    # 创建 controller 对象
+                    controller = PythonController(vm_ip=vm_ip, server_port=vm_port)
+
+                    # 写入 GLOBAL_SESSIONS
+                    GLOBAL_SESSIONS[worker_id] = {
+                        "controller": controller,
+                        "env_id": env_id,
+                        "task_id": "batch_allocated"  # 标识这是批量分配的会话
+                    }
+
+                    logger.info(f"[{worker_id}] Synced VM session: env_id={env_id}, ip={vm_ip}:{vm_port}")
+
+                except Exception as e:
+                    logger.error(f"[{worker_id}] Failed to create VM controller: {e}", exc_info=True)
+            else:
+                logger.warning(f"[{worker_id}] VM resource missing ip or id: {vm_info}")

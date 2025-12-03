@@ -62,7 +62,6 @@ setup(
         "rapidfuzz",
         "pyacoustid",
         "pygame",
-        "opencv-python-headless",
         "ImageHash",
         "scikit-image",
         "librosa",
@@ -96,13 +95,30 @@ setup(
         "azure-mgmt-network",
         "docker",
         "loguru",
-        "dotenv",
+        "python-dotenv",
         "tldextract",
         "anthropic",
+        # [新增] 核心运行时依赖
+        "httpx>=0.24.0",
+        "fastmcp>=0.1.0",
+        "fastapi>=0.100.0",
+        "uvicorn[standard]>=0.23.0",
         # Aliyun ECS SDK dependencies
         "alibabacloud_ecs20140526",
         "alibabacloud_tea_openapi",
         "alibabacloud_tea_util",
+        # [关键] RAG和向量检索依赖
+        "sentence-transformers>=2.2.0",
+        "faiss-cpu>=1.7.0",
+        # [关键] 数据验证和MCP协议
+        "pydantic>=2.0.0",
+        "mcp>=0.9.0",
+        # [可选] 云服务SDK - Volcengine
+        "volcengine-python-sdk[ecs]>=1.0.0",
+        # [其他] 科学计算和数据处理
+        "datasets>=2.0.0",
+        "scipy>=1.9.0",
+        "python-xlib>=0.33; sys_platform=='linux'",
     ],
     cmdclass={
         'install': InstallPlaywrightCommand,  # Use the custom install command
