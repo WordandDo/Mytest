@@ -42,6 +42,39 @@ async def allocate_batch_resources(worker_id: str, resource_types: list[str], ti
         except Exception as e:
             return json.dumps({"status": "error", "message": f"System Allocation Failed: {str(e)}"})
 
+# [新增] 统一的批量资源释放工具
+@ToolRegistry.register_tool("system_resource")
+async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> str:
+    """
+    [系统工具] 批量释放资源。
+    接收资源 ID 列表，逐一调用 Resource API 释放接口。
+    """
+    if not resource_ids:
+        return json.dumps({"status": "success", "message": "No resources to release"})
+
+    results = {}
+    async with httpx.AsyncClient() as client:
+        # 并行释放可能导致后端竞争，此处暂时采用安全串行释放
+        for rid in resource_ids:
+            try:
+                resp = await client.post(
+                    f"{RESOURCE_API_URL}/release",
+                    json={"worker_id": worker_id, "resource_id": rid},
+                    timeout=10.0
+                )
+                if resp.status_code == 200:
+                    results[rid] = "released"
+                else:
+                    results[rid] = f"failed: {resp.status_code}"
+            except Exception as e:
+                logger.error(f"Failed to release resource {rid}: {e}")
+                results[rid] = f"error: {str(e)}"
+    
+    # 清理 Gateway 侧的全局会话缓存 (Important!)
+    await _cleanup_resource_sessions(worker_id)
+    
+    return json.dumps({"status": "completed", "details": results})
+
 # [新增] 注册获取初始 Observation 的工具
 @ToolRegistry.register_tool("system_resource")
 async def get_batch_initial_observations(worker_id: str) -> str:
@@ -88,7 +121,7 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict, all
     if not resource_init_configs:
         return json.dumps({"status": "success", "details": "No config provided"})
 
-    # [修复] 在初始化前，先同步资源状态到各模块的全局变量
+    # 在初始化前，先同步资源状态到各模块的全局变量
     if allocated_resources:
         logger.info(f"[{worker_id}] Syncing allocated resources to module sessions...")
         await _sync_resource_sessions(worker_id, allocated_resources)
@@ -114,7 +147,6 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict, all
             if init_func:
                 logger.info(f"[{worker_id}] Invoking {func_name}...")
                 # 3. 执行初始化
-                # 注意：content 为 None 时也传进去，由函数内部决定是否跳过
                 result = init_func(worker_id, content)
                 # 处理协程函数
                 if hasattr(result, '__await__'):
@@ -126,7 +158,6 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict, all
                 else:
                     msg = f"{res_type} Init Success"
             else:
-                # 模块存在但没定义初始化函数，视为无需初始化，成功
                 logger.debug(f"[{worker_id}] No init function found for {res_type}, skipping.")
                 msg = "No init logic defined (Success)"
 
@@ -151,65 +182,61 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict, all
 async def _sync_resource_sessions(worker_id: str, allocated_resources: dict):
     """
     [内部函数] 将原子分配的资源信息同步到各模块的全局变量
-
-    Args:
-        worker_id: Worker ID
-        allocated_resources: 原子分配返回的资源字典，格式：
-            {
-                "rag": {"id": "...", "token": "...", ...},
-                "vm_pyautogui": {"id": "...", "ip": "...", "port": ..., ...}
-            }
     """
     # 同步 RAG 资源
     if "rag" in allocated_resources:
         rag_info = allocated_resources["rag"]
-        # 导入 RAG_SESSIONS 全局变量
-        from mcp_server.rag_server import RAG_SESSIONS
+        try:
+            from mcp_server.rag_server import RAG_SESSIONS
+            resource_id = rag_info.get("id")
+            token = rag_info.get("token")
+            if resource_id and token:
+                RAG_SESSIONS[worker_id] = {"resource_id": resource_id, "token": token}
+                logger.info(f"[{worker_id}] Synced RAG session")
+        except ImportError:
+            pass
 
-        # 提取关键信息
-        resource_id = rag_info.get("id")
-        token = rag_info.get("token")
-
-        if resource_id and token:
-            RAG_SESSIONS[worker_id] = {
-                "resource_id": resource_id,
-                "token": token
-            }
-            logger.info(f"[{worker_id}] Synced RAG session: resource_id={resource_id}")
-        else:
-            logger.warning(f"[{worker_id}] RAG resource missing id or token: {rag_info}")
-
-    # 同步 VM 资源 - 创建 controller 对象
+    # 同步 VM 资源
     vm_types = ["vm", "vm_pyautogui", "vm_computer_13"]
     for vm_type in vm_types:
         if vm_type in allocated_resources:
             vm_info = allocated_resources[vm_type]
-            logger.info(f"[{worker_id}] Syncing VM resource: {vm_type} -> {vm_info.get('id')}")
-
-            # 提取连接信息
             vm_ip = vm_info.get("ip")
             vm_port = vm_info.get("port", 5000)
             env_id = vm_info.get("id")
 
             if vm_ip and env_id:
                 try:
-                    # 导入必要的模块
                     from mcp_server.osworld_server import GLOBAL_SESSIONS
                     from src.utils.desktop_env.controllers.python import PythonController
-
-                    # 创建 controller 对象
                     controller = PythonController(vm_ip=vm_ip, server_port=vm_port)
-
-                    # 写入 GLOBAL_SESSIONS
                     GLOBAL_SESSIONS[worker_id] = {
                         "controller": controller,
                         "env_id": env_id,
-                        "task_id": "batch_allocated"  # 标识这是批量分配的会话
+                        "task_id": "batch_allocated"
                     }
-
-                    logger.info(f"[{worker_id}] Synced VM session: env_id={env_id}, ip={vm_ip}:{vm_port}")
-
+                    logger.info(f"[{worker_id}] Synced VM session")
                 except Exception as e:
-                    logger.error(f"[{worker_id}] Failed to create VM controller: {e}", exc_info=True)
-            else:
-                logger.warning(f"[{worker_id}] VM resource missing ip or id: {vm_info}")
+                    logger.error(f"[{worker_id}] VM sync failed: {e}")
+
+async def _cleanup_resource_sessions(worker_id: str):
+    """
+    [内部函数] 清理 Gateway 侧各模块的全局会话缓存
+    """
+    # 清理 RAG
+    try:
+        from mcp_server.rag_server import RAG_SESSIONS
+        if worker_id in RAG_SESSIONS:
+            del RAG_SESSIONS[worker_id]
+            logger.info(f"[{worker_id}] Cleaned up RAG session")
+    except ImportError:
+        pass
+
+    # 清理 VM
+    try:
+        from mcp_server.osworld_server import GLOBAL_SESSIONS
+        if worker_id in GLOBAL_SESSIONS:
+            del GLOBAL_SESSIONS[worker_id]
+            logger.info(f"[{worker_id}] Cleaned up VM session")
+    except ImportError:
+        pass

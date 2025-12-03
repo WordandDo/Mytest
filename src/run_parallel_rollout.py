@@ -1,513 +1,621 @@
-# src/run_parallel_rollout.py
-# -*- coding: utf-8 -*-
-"""
-并行 Rollout 框架 - 支持重资产管理的并行任务执行
-
-[修改说明]
-为了适配 HTTP MCP 多租户模式，在 run_rollout_worker 中增加了 worker_id 的自动注入逻辑。
-"""
-import time
-import os
+# src/envs/http_mcp_env.py
 import sys
+import os
 import json
 import logging
-import signal
+import asyncio
+import time
+from typing import Dict, Any, Union, Optional, List, Tuple
 from datetime import datetime
-from multiprocessing import Manager, Process
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, field
 
-# Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 引入 MCP SDK
+from mcp.types import CallToolResult
+# 引入 MCP SSE 客户端
+from utils.mcp_sse_client import MCPSSEClient
 
-from dotenv import load_dotenv
-from benchmark import Benchmark
-from envs.enviroment import Environment
-from envs.factory import get_environment_class
+# 引入任务超时监控工具
+from utils.task_timeout import TaskTimeoutMonitor, TaskTimeoutError, check_execution_timeout
 
-# [新增] 导入超时异常，用于worker捕获任务超时
-from utils.task_timeout import TaskTimeoutError
+import openai
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
-# 预加载环境变量
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
-if os.path.exists(ENV_PATH):
-    load_dotenv(ENV_PATH)
-    logger.info(f"Loaded environment variables from {ENV_PATH}")
-else:
-    logger.warning(f".env file not found at {ENV_PATH}, skipping environment variable preload")
 
-_MAIN_RESOURCE_MANAGER: Optional[Any] = None
-
-
-def _register_main_signal_handlers(global_resources: Any):
+class HttpMCPEnv:
     """
-    注册主进程信号处理，确保 Ctrl+C 时优雅关闭资源
-    """
-    global _MAIN_RESOURCE_MANAGER
-    _MAIN_RESOURCE_MANAGER = global_resources
-
-    def handle_signal(signum, frame):
-        logger.info(f"Main process received signal {signum}, cleaning up resources...")
-        try:
-            if _MAIN_RESOURCE_MANAGER and hasattr(_MAIN_RESOURCE_MANAGER, 'stop_all'):
-                _MAIN_RESOURCE_MANAGER.stop_all()
-        except Exception as exc:
-            logger.error(f"Failed to stop resources during signal handling: {exc}")
-        finally:
-            sys.exit(0)
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-
-@dataclass
-class ParallelRolloutConfig:
-    """并行 Rollout 配置"""
-    num_rollouts: int = 5          # 并行度（Worker 数量）
-    env_mode: str = "osworld"      # 环境模式
-    env_kwargs: Dict[str, Any] = field(default_factory=dict)  # 环境配置参数
-    agent_config_dict: Dict[str, Any] = field(default_factory=dict)  # Agent 配置
-    output_dir: str = "results"    # 输出目录
-
-
-def run_parallel_rollout(
-    config: ParallelRolloutConfig,
-    benchmark: Benchmark
-):
-    """
-    运行并行 Rollout 框架
-    """
-    logger.info("=" * 60)
-    logger.info("Starting Parallel Rollout Framework")
-    logger.info(f"  Num Rollouts: {config.num_rollouts}")
-    logger.info(f"  Env Mode: {config.env_mode}")
-    logger.info(f"  Benchmark Items: {len(benchmark.get_items())}")
-    logger.info("=" * 60)
+    配置驱动的 MCP 环境适配器 (MCP 纯净版)
     
-    # 1. 根据 env_mode 动态获取环境类
-    EnvClass = get_environment_class(config.env_mode)
-    logger.info(f"Using environment class: {EnvClass.__name__}")
-    
-    # 2. 调用环境类的 setup_global_resources 方法初始化全局资源
-    # 注意：在 HttpMCPEnv 模式下，这里通常返回 NoResourceManager，
-    # 因为资源管理已移交给了独立的 Resource API 服务。
-    global_resources = EnvClass.setup_global_resources(config)
-    _register_main_signal_handlers(global_resources)
-    
-    try:
-        # 3. 创建跨进程共享的数据结构
-        with Manager() as manager:
-            task_queue = manager.Queue()
-            shared_results = manager.list()
-            worker_instance_map = manager.dict()
-            worker_instance_events = manager.list()
-            
-            # 将所有基准测试项放入任务队列
-            for item in benchmark.get_items():
-                task_dict = {
-                    "id": item.id,
-                    "question": item.question,
-                    "answer": item.answer,
-                    "metadata": item.metadata or {}
-                }
-                task_queue.put(task_dict)
-
-            # 添加哨兵值 (Poison Pill)
-            for _ in range(config.num_rollouts):
-                task_queue.put(None)
-            
-            # 4. 启动 Worker 进程
-            env_class_name = EnvClass.__module__ + "." + EnvClass.__name__
-            processes = []
-            for i in range(config.num_rollouts):
-                # 生成唯一的 worker_id
-                worker_id = f"worker-{i+1}"
-                
-                proc = Process(
-                    target=run_rollout_worker,
-                    args=(
-                        worker_id,
-                        task_queue,
-                        env_class_name,
-                        config.env_kwargs,
-                        config.agent_config_dict,
-                        config.output_dir,
-                        global_resources,
-                        config.num_rollouts,
-                        shared_results,
-                        worker_instance_map,
-                        worker_instance_events,
-                    )
-                )
-                proc.start()
-                processes.append(proc)
-                logger.info(f"Started worker process: {worker_id}")
-            
-            # 等待所有 Worker 进程执行完毕
-            for proc in processes:
-                proc.join()
-            
-            # 5. 收集结果并评测
-            results = list(shared_results)
-            worker_instance_snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in worker_instance_map.items()}
-            worker_instance_events_log = list(worker_instance_events)
-            
-            logger.info(f"All workers completed. Total results: {len(results)}")
-            
-            predictions = {
-                result["task_id"]: result.get("answer", "")
-                for result in results
-                if result.get("success", False)
-            }
-            
-            evaluation_metric = config.agent_config_dict.get("evaluation_metric", "exact_match")
-            benchmark_results = benchmark.evaluate(
-                predictions=predictions,
-                metric=evaluation_metric
-            )
-            
-            logger.info("=" * 60)
-            logger.info("Benchmark Evaluation Results")
-            logger.info(f"  Metric: {evaluation_metric}")
-            logger.info(f"  Total Items: {len(benchmark_results)}")
-            if benchmark_results:
-                avg_score = sum(r.score for r in benchmark_results) / len(benchmark_results)
-                logger.info(f"  Average Score: {avg_score:.4f}")
-            logger.info("=" * 60)
-            
-            # 保存结果
-            os.makedirs(config.output_dir, exist_ok=True)
-            
-            mapping_file = os.path.join(config.output_dir, "worker_instance_map.json")
-            with open(mapping_file, "w", encoding="utf-8") as f:
-                json.dump(worker_instance_snapshot, f, indent=2, ensure_ascii=False)
-
-            events_file = os.path.join(config.output_dir, "worker_instance_events.jsonl")
-            with open(events_file, "w", encoding="utf-8") as f:
-                for event in worker_instance_events_log:
-                    json.dump(event, f, ensure_ascii=False)
-                    f.write("\n")
-
-            # =================================================================
-            # [新增] 保存完整轨迹 (Trajectory)
-            # 这包含了 task 信息、Agent 与 MCP 工具交互的全过程 (VM/RAG 参数及输出)
-            # =================================================================
-            trajectory_file = os.path.join(config.output_dir, "trajectory.jsonl")
-            logger.info(f"Saving execution trajectories to {trajectory_file}...")
-            with open(trajectory_file, "w", encoding="utf-8") as f:
-                for res in results:
-                    # res 是 environment.run_task 的返回结果，通常包含 'messages' 字段
-                    json.dump(res, f, ensure_ascii=False)
-                    f.write("\n")
-            # =================================================================
-
-            return {
-                "worker_results": results,
-                "benchmark_evaluation": benchmark_results
-            }
-    finally:
-        try:
-            if global_resources is not None and hasattr(global_resources, 'stop_all'):
-                logger.info("Stopping all resources...")
-                global_resources.stop_all()
-        except Exception as exc:
-            logger.error(f"Failed to stop resources: {exc}")
-
-
-def get_active_resource_configs(environment, task_item):
+    完全基于 Model Context Protocol (MCP) 与远程 Gateway/Server 交互。
+    负责 Agent 执行循环、工具调用转发以及通过 MCP 工具进行资源生命周期管理。
     """
-    根据环境实际启用的资源类型筛选任务中的资源配置
     
-    Args:
-        environment: Environment 实例
-        task_item: BenchmarkItem 任务项
+    # 开启重型资源模式，通知框架在 run_task 前后调用 allocate/release
+    has_heavy_resource = True 
+
+    def __init__(self,
+                 model_name: str = "gpt-4.1-2025-04-14",
+                 parallel_degree=1,
+                 **kwargs):
         
-    Returns:
-        dict: 过滤后的资源配置字典
-    """
-    # 1. 获取 Task 中定义的所有资源配置
-    # benchmark.py 将其存放在 metadata 中
-    raw_configs = task_item.get("metadata", {}).get("resource_configs", {})
-    
-    # 2. 获取当前环境实际启用的资源类型
-    # HttpMCPEnv 从 gateway_config.json 加载了 active_resources (如 ['vm', 'rag'])
-    active_types = getattr(environment, "active_resources", [])
-    
-    # 3. 仅保留已启用资源的配置
-    active_configs = {}
-    for res_type in active_types:
-        if res_type in raw_configs:
-            active_configs[res_type] = raw_configs[res_type]
-            
-    return active_configs
-
-
-def run_rollout_worker(
-    worker_id: str,
-    task_queue,
-    env_class_name: str,
-    env_kwargs: Dict[str, Any],
-    agent_config_dict: Dict[str, Any],
-    output_dir: str,
-    global_resources: Any,
-    parallel_degree: int,
-    shared_results,
-    worker_instance_map=None,
-    worker_instance_events=None,
-):
-    """
-    Rollout Worker 进程函数
-    """
-    # 配置该进程的日志
-    logger = logging.getLogger(f"worker.{worker_id}")
-    environment: Optional[Environment] = None
-
-    def worker_signal_handler(signum, frame):
-        logger.info(f"Worker {worker_id} received signal {signum}. Cleaning up...")
-        try:
-            if environment:
-                cleanup_fn = getattr(environment, "cleanup", None)
-                if callable(cleanup_fn):
-                    cleanup_fn(worker_id)
-                else:
-                    environment.env_close()
-        except Exception as e:
-            logger.error(f"Error during signal cleanup: {e}")
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, worker_signal_handler)
-    signal.signal(signal.SIGTERM, worker_signal_handler)
-
-    try:
-        # 1. 动态导入环境类
-        module_name, class_name = env_class_name.rsplit(".", 1)
-        env_module = __import__(module_name, fromlist=[class_name])
-        EnvClass = getattr(env_module, class_name)
+        self.model_name = model_name
+        self.config = kwargs
         
-        # 2. [关键修改] 将 worker_id 注入到环境参数中
-        # 这是为了让 HttpMCPEnv 能够知道当前是哪个 Worker，从而在 HTTP 请求中带上 worker_id
-        local_env_kwargs = env_kwargs.copy()
-        local_env_kwargs["worker_id"] = worker_id
+        # 工具元数据缓存
+        self.tool_schemas: List[Dict[str, Any]] = []
+        self.tool_descriptions: str = ""
 
-        # 3. 初始化环境实例
-        environment = EnvClass(
-            resource_manager=global_resources,
-            parallel_degree=parallel_degree,
-            **local_env_kwargs,  # 使用注入了 worker_id 的参数
+        # 1. 基础配置
+        self.server_url = kwargs.get("mcp_server_url", "http://localhost:8000")
+        
+        # 2. 获取 worker_id
+        if "worker_id" in kwargs:
+            self.worker_id = kwargs["worker_id"]
+        else:
+            import multiprocessing
+            self.worker_id = multiprocessing.current_process().name
+
+        # 3. 实例化 MCP 客户端
+        self.mcp_client = MCPSSEClient(f"{self.server_url}/sse")
+
+        # 4. 加载 Gateway 配置 (确定需要申请哪些资源)
+        config_path = kwargs.get("gateway_config_path", "gateway_config.json")
+        self.modules_config = self._load_gateway_config(config_path)
+
+        # [修复] 解析活动资源类型时，过滤掉不需要后端分配的 'system' 类型
+        # 'system' 通常指代无状态的系统工具集，不需要向 Resource API 申请锁定
+        self.active_resources = [
+            m.get("resource_type")
+            for m in self.modules_config.get("modules", [])
+            if m.get("resource_type") and m.get("resource_type") != "system"
+        ]
+        
+        # 初始化状态变量
+        self.initial_observation = None
+        self.allocated_resources = {}
+        self._tools_initialized = False
+
+        # 初始化持久事件循环
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url}")
+        logger.info(f"Active Allocatable Resources: {self.active_resources}")
+        
+        # 初始化远程工具列表
+        self._initialize_tools()
+
+    @property
+    def mode(self) -> str:
+        return "http_mcp"
+
+    # =========================================================================
+    # 核心 Agent 执行逻辑
+    # =========================================================================
+
+    def run_task(self, task: Dict[str, Any], agent_config: Dict[str, Any], logger: logging.Logger) -> Dict[str, Any]:
+        """
+        执行完整的 Agent 任务循环
+        """
+        task_id = task.get("id", "unknown")
+        question = task.get("question", "")
+
+        model_name = agent_config.get("model_name", self.model_name)
+        max_turns = agent_config.get("max_turns", 3)
+        max_retries = agent_config.get("max_retries", 3)
+
+        # 获取任务超时配置
+        task_timeout = float(
+            agent_config.get("task_timeout",
+            os.environ.get("TASK_EXECUTION_TIMEOUT", "600"))
         )
-        
-        if environment is None:
-            raise RuntimeError(f"Failed to create environment instance: {env_class_name}")
 
-        # 4. 启动环境
+        task_output_dir = None
+        if hasattr(self, "get_task_output_dir") and callable(self.get_task_output_dir):
+            task_output_dir = self.get_task_output_dir(
+                agent_config.get("output_dir", "results"),
+                task_id,
+                model_name
+            )
+
+        monitor = TaskTimeoutMonitor(task_timeout, task_id, self.worker_id)
+
         try:
-            environment.env_start()
-        except Exception as exc:
-            logger.warning(f"Worker {worker_id} env_start() failed: {exc}")
+            monitor.start()
 
-        # 调用可选的 init 方法
-        init_fn = getattr(environment, "init", None)
-        if callable(init_fn):
-            try:
-                init_fn()
-            except Exception as exc:
-                logger.warning(f"Worker {worker_id} environment init() failed: {exc}")
+            messages = self._run_conversation(
+                question, model_name, max_turns, max_retries, logger,
+                task_timeout=task_timeout,
+                task_start_time=time.time()
+            )
 
-        logger.info(f"Worker {worker_id} started")
+            final_answer = self._extract_final_answer(messages)
 
-        # 5. 检查环境功能特性
-        task_config_fn = getattr(environment, "initialize_with_task_config", None)
-        env_supports_task_config = callable(task_config_fn)
-        allocate_fn = getattr(environment, "allocate_resource", None)
-        release_fn = getattr(environment, "release_resource", None)
-        env_has_heavy_resource = bool(getattr(environment, "has_heavy_resource", False) and callable(allocate_fn))
+            result = {
+                "task_id": task_id,
+                "question": question,
+                "answer": final_answer,
+                "messages": messages,
+                "success": True,
+                "error": None,
+            }
 
-        # 6. 准备 Agent 配置
-        agent_config = dict(agent_config_dict)
-        agent_config["output_dir"] = output_dir
+            if task_output_dir:
+                self._save_conversation_log(
+                    task_output_dir,
+                    task_id,
+                    question,
+                    model_name,
+                    messages,
+                    result
+                )
 
-        # 7. 主任务循环
-        while True:
-            try:
-                task = task_queue.get()
-                if task is None: # 哨兵值
-                    logger.info(f"Worker {worker_id} received sentinel. Stopping loop.")
-                    break
-            except Exception as e:
-                logger.error(f"Worker {worker_id} error getting task: {e}")
-                break
+            return result
 
-            task_id = task.get("id", "unknown")
-            resource_allocated = False
-            current_resource_id = None
-            task_start_time = time.time()
-            logger.info(f"▶️ Worker {worker_id} START Task {task_id}")
-            
-            # === [新增日志 START] ===
-            # 打印任务的核心问题和配置，确认 metadata 传递正确
-            q_text = task.get("question", "")
-            logger.info(f"   [Task Info] Question: {q_text[:100]}...") 
-            logger.info(f"   [Task Info] Metadata: {json.dumps(task.get('metadata', {}), ensure_ascii=False)}")
-            # === [新增日志 END] ===
+        except TaskTimeoutError as e:
+            logger.error(f"❌ [TaskTimeout] Task {task_id} timeout: {e}")
+            return {
+                "task_id": task_id,
+                "question": question,
+                "answer": "",
+                "messages": [],
+                "success": False,
+                "error": f"Task execution timeout: {e}",
+            }
 
-            try:
-                # 补充 metadata
-                if "metadata" not in task or not isinstance(task.get("metadata"), dict):
-                    task["metadata"] = task.get("metadata") or {}
-                
-                metadata = task.get("metadata", {})
-                for key in ("config", "evaluator"):
-                    if key not in task and key in metadata:
-                        task[key] = metadata[key]
+        except Exception as e:
+            logger.error(f"❌ [TaskError] Task {task_id} failed: {e}")
+            raise
 
-                # 环境特定配置
-                if env_supports_task_config:
-                    task_env_config = (
-                        task.get("env_config")
-                        or task.get("metadata", {}).get("env_config")
+        finally:
+            monitor.cancel()
+
+    def _run_conversation(self,
+                         question: str,
+                         model_name: str,
+                         max_turns: int,
+                         max_retries: int,
+                         logger: logging.Logger,
+                         task_timeout: Optional[float] = None,
+                         task_start_time: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        
+        system_prompt = self.get_system_prompt(question)
+        messages: List[ChatCompletionMessageParam] = [
+            {"role": "system", "content": system_prompt},
+        ]
+
+        user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"Question: {question}\n"}]
+
+        # 注入初始观察
+        initial_obs = getattr(self, "initial_observation", None)
+        if initial_obs and isinstance(initial_obs, dict):
+            if initial_obs.get("screenshot"):
+                user_content.append({
+                    "type": "text",
+                    "text": "Here is the initial screen state of the computer:"
+                })
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{initial_obs['screenshot']}",
+                        "detail": "high"
+                    }
+                })
+
+            if initial_obs.get("accessibility_tree"):
+                user_content.append({
+                    "type": "text",
+                    "text": f"Accessibility Tree:\n{initial_obs['accessibility_tree']}"
+                })
+
+        messages.append({"role": "user", "content": user_content})
+
+        client = self._get_openai_client()
+        turn_count = 0
+
+        while turn_count < max_turns:
+            if task_timeout and task_start_time:
+                if check_execution_timeout(task_start_time, task_timeout, "current_task", self.worker_id):
+                    raise TaskTimeoutError(
+                        f"Task timeout after {time.time() - task_start_time:.1f}s "
+                        f"(limit: {task_timeout}s) at turn {turn_count}"
                     )
-                    if task_env_config:
-                        task_config_fn(task_env_config)
 
-                # 重型资源分配（HttpMCPEnv 模式下通常不需要这个，因为资源分配内聚在 env_start/run_task 中了）
-                # 但保留此逻辑以兼容原有的 OSWorld 环境
-                if env_has_heavy_resource:
-                    logger.info(f"[worker {worker_id}] requesting resource from manager")
-                    # 获取活动资源配置
-                    active_resource_configs = get_active_resource_configs(environment, task)
-                    if not allocate_fn(worker_id, active_resource_configs):
-                        raise RuntimeError("Failed to allocate resource from pool")
-                    resource_allocated = True
-                    
-                    get_allocated_fn = getattr(environment, "get_allocated_resource_id", None)
-                    current_resource_id = get_allocated_fn() if callable(get_allocated_fn) else None
-                    
-                    if current_resource_id:
-                        # [修改] 增加日志
-                        logger.info(f"[worker {worker_id}] acquired resource={current_resource_id} for task {task_id}")
-                        logger.info(f"[worker {worker_id}] acquired resource={current_resource_id}")
-                        if worker_instance_map is not None:
-                            worker_instance_map[worker_id] = {
-                                "instance_id": current_resource_id,
-                                "task_id": task_id,
-                                "assigned_time": datetime.now().isoformat(),
-                            }
-                        if worker_instance_events is not None:
-                            worker_instance_events.append({
-                                "timestamp": datetime.now().isoformat(),
-                                "worker_id": worker_id,
-                                "instance_id": current_resource_id,
-                                "task_id": task_id,
-                                "action": "allocate",
+            retry = 0
+            while retry < max_retries:
+                try:
+                    logger.info(f"Turn {turn_count}: Calling LLM...")
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        tools=self.get_tool_schemas(),
+                    )
+
+                    if not hasattr(response, "choices") or not response.choices:
+                        raise ValueError("OpenAI API returned empty response")
+
+                    assistant_message = response.choices[0].message
+                    messages.append(assistant_message.model_dump())
+
+                    if assistant_message.tool_calls:
+                        if messages[-1]['content'] is None:
+                             messages[-1]['content'] = ""
+
+                        for tool_call in assistant_message.tool_calls:
+                            tool_name = tool_call.function.name
+                            tool_args = json.loads(tool_call.function.arguments)
+
+                            logger.info(f"Round {turn_count}: 🔧 Using tool: {tool_name}")
+
+                            # 代理到 MCP 执行
+                            tool_output = self.execute_tool(tool_name, tool_args)
+
+                            if isinstance(tool_output, dict) and "images" in tool_output:
+                                content_str = tool_output.get("text", "")
+                                image_list = tool_output.get("images", [])
+                            else:
+                                content_str = str(tool_output)
+                                image_list = []
+
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "name": tool_name,
+                                "content": content_str
                             })
 
-                # 8. 执行任务
-                result = environment.run_task(task, agent_config, logger)
-
-                if shared_results is not None:
-                    shared_results.append(result)
-                # [修改] 记录任务耗时
-                duration = time.time() - task_start_time
-                status_icon = "✅" if result.get("success") else "❌"
-                logger.info(f"{status_icon} Worker {worker_id} FINISH Task {task_id} in {duration:.1f}s (Success: {result.get('success')})")
-                logger.info(f"Worker {worker_id} completed task {task_id}")
-
-            except TaskTimeoutError as e:
-                # [新增] 特殊处理任务超时异常
-                logger.error(f"⏰ Task {task_id} timeout: {e}")
-                failure_result = {
-                    "task_id": task_id,
-                    "question": task.get("question", ""),
-                    "answer": "",
-                    "messages": [],
-                    "success": False,
-                    "error": f"Task execution timeout: {e}",
-                }
-                if shared_results is not None:
-                    shared_results.append(failure_result)
-            except Exception as e:
-                logger.error(f"Task {task_id} failed: {e}", exc_info=True)
-                failure_result = {
-                    "task_id": task_id,
-                    "question": task.get("question", ""),
-                    "answer": "",
-                    "messages": [],
-                    "success": False,
-                    "error": str(e),
-                }
-                if shared_results is not None:
-                    shared_results.append(failure_result)
-            finally:
-                # 释放重型资源（如果已分配）
-                if env_has_heavy_resource and resource_allocated and callable(release_fn):
-                    if current_resource_id:
-                        logger.info(f"[worker {worker_id}] releasing resource={current_resource_id}")
-                    release_fn(worker_id, reset=True)
+                            if image_list:
+                                user_content_blocks = []
+                                user_content_blocks.append({
+                                    "type": "text", 
+                                    "text": f"Observation from tool '{tool_name}' (Screenshots):"
+                                })
+                                for img_b64 in image_list:
+                                    user_content_blocks.append({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/png;base64,{img_b64}",
+                                            "detail": "high"
+                                        }
+                                    })
+                                messages.append({
+                                    "role": "user",
+                                    "content": user_content_blocks
+                                })
+                        
+                    else:
+                        logger.info(f"Turn {turn_count}: final answer produced")
+                        return messages 
                     
-                    if worker_instance_map is not None:
-                        worker_instance_map.pop(worker_id, None)
-                    if worker_instance_events is not None:
-                        worker_instance_events.append({
-                            "timestamp": datetime.now().isoformat(),
-                            "worker_id": worker_id,
-                            "instance_id": current_resource_id,
-                            "task_id": task_id,
-                            "action": "release",
-                        })
+                    break # 成功则跳出重试循环
 
-    finally:
-        # Worker 退出清理
-        if worker_instance_map is not None:
-            worker_instance_map.pop(worker_id, None)
-        logger.info(f"Worker {worker_id} stopped")
+                except Exception as exc:
+                    retry += 1
+                    logger.warning(f"Retry {retry}/{max_retries} due to error: {exc}")
+                    if retry >= max_retries:
+                        raise
+            turn_count += 1
+            
+        logger.warning("Max turns reached without final answer")
+        return messages
 
+    def _extract_final_answer(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        if not messages:
+            return None
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if content is not None:
+                    return str(content)
+        return None
+    
+    def _save_conversation_log(self, output_dir, task_id, question, model, messages, result):
+        import os
+        import json
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            safe_task_id = "".join([c if c.isalnum() or c in "-_." else "_" for c in str(task_id)])
+            file_path = os.path.join(output_dir, f"{safe_task_id}.json")
+            assistant_turns = sum(1 for m in messages if m.get("role") == "assistant")
+            log_content = {
+                "meta": {
+                    "task_id": task_id,
+                    "model_name": model,
+                    "timestamp": datetime.now().isoformat(),
+                    "output_file": file_path
+                },
+                "task": {
+                    "question": question,
+                    "status": "success" if result.get("success") else "failed",
+                    "final_answer": result.get("answer"),
+                    "total_turns": assistant_turns
+                },
+                "raw_result": result,
+            }
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(log_content, f, ensure_ascii=False, indent=2, default=str)
+            logger.info(f"[{self.worker_id}] ✅ Conversation log saved to: {file_path}")
+        except Exception as e:
+            logger.error(f"[{self.worker_id}] ❌ Failed to save conversation log: {e}")
 
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Run parallel rollout")
-    parser.add_argument("--data_path", type=str, required=True, help="Path to benchmark data file")
-    parser.add_argument("--num_rollouts", type=int, default=5, help="Number of parallel workers")
-    parser.add_argument("--env_mode", type=str, default="http_mcp", help="Environment mode") # 默认改为 http_mcp
-    parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
-    
-    # 额外参数：MCP 和 Resource API 地址
-    parser.add_argument("--mcp_server_url", type=str, default="http://localhost:8080", help="MCP Server URL")
-    parser.add_argument("--resource_api_url", type=str, default="http://localhost:8000", help="Resource API URL")
-    
-    args = parser.parse_args()
-    
-    # 加载 Benchmark
-    benchmark = Benchmark(data_path=args.data_path)
-    
-    # 环境配置
-    env_kwargs: Dict[str, Any] = {
-        "observation_type": "screenshot_a11y_tree",
-        "mcp_server_url": args.mcp_server_url,
-        "resource_api_url": args.resource_api_url,
-    }
-    
-    # 创建配置
-    config = ParallelRolloutConfig(
-        num_rollouts=args.num_rollouts,
-        env_mode=args.env_mode,
-        output_dir=args.output_dir,
-        env_kwargs=env_kwargs,
-        agent_config_dict={
-            "model_name": "gpt-4.1-2025-04-14",
-            "evaluation_metric": "exact_match"
+    # =========================================================================
+    # OpenAI Client 管理
+    # =========================================================================
+
+    def _get_openai_client(self) -> openai.OpenAI:
+        if not hasattr(self, '_openai_client') or self._openai_client is None:
+            api_key = self.config.get("openai_api_key") or os.environ.get("OPENAI_API_KEY", "")
+            base_url = self.config.get("openai_api_url") or os.environ.get("OPENAI_API_URL") or os.environ.get("OPENAI_API_BASE")
+            timeout = float(self.config.get("openai_timeout", os.environ.get("OPENAI_TIMEOUT", "30")))
+            max_retries = int(self.config.get("openai_max_retries", os.environ.get("OPENAI_MAX_RETRIES", "2")))
+
+            logger.info(f"[{self.worker_id}] Initializing OpenAI client...")
+
+            openai.api_key = api_key
+            if base_url:
+                openai.base_url = base_url
+                self._openai_client = openai.OpenAI(
+                    api_key=api_key, base_url=base_url, timeout=timeout, max_retries=max_retries
+                )
+            else:
+                self._openai_client = openai.OpenAI(
+                    api_key=api_key, timeout=timeout, max_retries=max_retries
+                )
+        return self._openai_client
+
+    # =========================================================================
+    # 工具管理与执行 (适配 MCP)
+    # =========================================================================
+
+    def execute_tool(self, tool_name: str, params: Union[str, dict], **kwargs) -> Union[str, Dict[str, Any]]:
+        """执行工具：直接代理到 MCP"""
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except:
+                pass
+        return self._call_tool_sync(tool_name, params)
+
+    def get_tool_schemas(self) -> List[ChatCompletionToolParam]:
+        return self.tool_schemas  # type: ignore
+
+    def get_tool_descriptions(self) -> str:
+        return self.tool_descriptions
+
+    # =========================================================================
+    # Prompt 工程
+    # =========================================================================
+
+    def get_action_space(self) -> Optional[str]:
+        mode_config = self.config.get(self.mode)
+        if isinstance(mode_config, dict) and "action_space" in mode_config:
+            return mode_config.get("action_space")
+        return self.config.get("action_space")
+
+    def get_system_prompt(self, task_question: Optional[str] = None, **kwargs) -> str:
+        action_space = self.get_action_space()
+        if action_space is None:
+            prompt_template = load_system_prompt(environment_mode=self.mode)
+        else:
+            prompt_template = load_system_prompt(
+                environment_mode=self.mode, action_space=action_space
+            )
+
+        prompt = prompt_template.replace("{tool_descriptions}", self.get_tool_descriptions())
+
+        if task_question:
+            prompt += f"\nYou are asked to complete the following task: {task_question}"
+        
+        return prompt
+
+    # =========================================================================
+    # MCP 专用逻辑
+    # =========================================================================
+
+    def _load_gateway_config(self, config_path: str) -> Dict[str, Any]:
+        if not os.path.exists(config_path):
+            return {"modules": [{"resource_type": "vm"}]}
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {"modules": [{"resource_type": "vm"}]}
+
+    def _initialize_tools(self):
+        """从 MCP Server 获取工具列表"""
+        if not self._tools_initialized:
+            return
+
+        try:
+            logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
+            mcp_tools = self._list_tools_sync()
+
+            # 黑名单：Agent 不应直接调用的系统工具
+            blacklist = {
+                "get_observation", "evaluate_task",
+                "allocate_batch_resources", "setup_batch_resources",
+                "get_batch_initial_observations", "setup_vm_session",
+                "setup_rag_session", "teardown_environment", "release_rag_session",
+            }
+
+            valid_tools = [t for t in mcp_tools if t.name not in blacklist]
+            self.tool_schemas = [self._convert_mcp_tool_to_openai(t) for t in valid_tools]
+
+            descriptions = [f"- {t.name}: {t.description or 'No description.'}" for t in valid_tools]
+            self.tool_descriptions = "\n".join(descriptions)
+
+            logger.info(f"[{self.worker_id}] Initialized {len(valid_tools)} tools.")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize tools: {e}")
+            self.tool_schemas = []
+            self.tool_descriptions = "Error loading tools."
+
+    def _convert_mcp_tool_to_openai(self, mcp_tool) -> ChatCompletionToolParam:
+        parameters = mcp_tool.inputSchema.copy() if hasattr(mcp_tool, "inputSchema") else {}
+        # 移除内部参数 worker_id
+        if "properties" in parameters and "worker_id" in parameters["properties"]:
+            del parameters["properties"]["worker_id"]
+        if "required" in parameters and "worker_id" in parameters["required"]:
+            parameters["required"] = [p for p in parameters["required"] if p != "worker_id"]
+
+        return {
+            "type": "function",
+            "function": {
+                "name": mcp_tool.name,
+                "description": mcp_tool.description,
+                "parameters": parameters 
+            }
         }
-    )
-    
-    # 运行并行 Rollout
-    results = run_parallel_rollout(config, benchmark)
-    
-    logger.info("Parallel rollout completed successfully")
+
+    def env_start(self):
+        logger.info(f"Worker [{self.worker_id}] connecting to MCP...")
+        self._run_sync(self.mcp_client.connect())
+        self._tools_initialized = True
+        self._initialize_tools()
+
+    def env_close(self):
+        if hasattr(self, '_loop') and not self._loop.is_closed():
+            self._loop.close()
+
+    def _run_sync(self, awaitable):
+        return self._loop.run_until_complete(awaitable)
+
+    def _list_tools_sync(self):
+        return self._run_sync(self.mcp_client.list_tools())
+
+    def _call_tool_sync(self, name, arguments) -> Union[Dict[str, Any], Any]:
+        """同步调用 MCP 工具"""
+        if isinstance(arguments, dict) and "worker_id" not in arguments:
+            arguments["worker_id"] = self.worker_id
+            
+        logger.info(f"[{self.worker_id}] ⏳ Calling tool: {name}")
+        res = self._run_sync(self.mcp_client.call_tool(name, arguments))
+        
+        # 生命周期工具直接返回原始结果，不进行标准化包装
+        lifecycle_tools = {
+            "allocate_batch_resources", "setup_batch_resources", 
+            "get_batch_initial_observations", "teardown_environment"
+        }
+        if name in lifecycle_tools:
+            return res 
+
+        # 通用输出标准化
+        standardized_output = {"text": "", "images": []}
+        text_parts = []
+        
+        if hasattr(res, 'content') and res.content:
+            for item in res.content:
+                if item.type == 'text':
+                    text_parts.append(item.text)
+                elif item.type == 'image':
+                    standardized_output["images"].append(item.data)
+                elif item.type == 'resource':
+                    text_parts.append(f"[Resource: {item.resource.uri}]")
+        else:
+            text_parts.append(str(res) if res else "Success")
+
+        standardized_output["text"] = "\n".join(text_parts)
+        return standardized_output
+
+    def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:
+        try:
+            if response.content and len(response.content) > 0:
+                content_item = response.content[0]
+                text_content = getattr(content_item, 'text', None)
+                if not text_content and hasattr(content_item, 'resource'):
+                    text_content = getattr(content_item.resource, 'text', None)
+                
+                if text_content:
+                    return json.loads(text_content)
+            return {"status": "unknown"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def get_inital_obs(self) -> Dict[str, Any]:
+        """调用 MCP 获取初始观察"""
+        logger.info(f"[{self.worker_id}] Fetching initial observations...")
+        combined_obs = {"vm": None, "rag": None}
+        try:
+            res = self._call_tool_sync("get_batch_initial_observations", {"worker_id": self.worker_id})
+            data = self._parse_mcp_response(res)
+
+            if isinstance(data, dict) and "error" not in data:
+                if "vm" in data and data["vm"]:
+                    combined_obs["vm"] = data["vm"]
+                    self.initial_observation = data["vm"]
+                if "rag" in data:
+                    combined_obs["rag"] = data["rag"]
+            else:
+                logger.warning(f"[{self.worker_id}] Failed to fetch obs: {data.get('error')}")
+            return combined_obs
+        except Exception as e:
+            logger.error(f"[{self.worker_id}] Obs fetch error: {e}")
+            return combined_obs
+
+    def allocate_resource(self, worker_id: str, resource_init_data: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        统一的资源分配入口函数 (MCP 模式)
+        """
+        resource_init_data = resource_init_data or {}
+        logger.info(f"Worker [{worker_id}] allocating resources...")
+        self.initial_observation = None
+
+        try:
+            if not self.active_resources:
+                 logger.warning(f"[{worker_id}] No allocatable resources found (system filtered). Skipping allocation.")
+                 # 即使没有需要分配的资源，也调用获取观察值，因为可能有无状态工具可用
+                 self.get_inital_obs()
+                 return True
+
+            # 1. 申请资源
+            logger.info(f"[{self.worker_id}] Allocating batch resources: {self.active_resources}...")
+            res = self._call_tool_sync("allocate_batch_resources", {
+                "resource_types": self.active_resources,
+                "timeout": 600
+            })
+            data = self._parse_mcp_response(res)
+            if isinstance(data, dict) and data.get("status") == "error":
+                 logger.error(f"Alloc failed: {data.get('message')}")
+                 return False
+
+            self.allocated_resources = data
+
+            # 2. 初始化资源
+            if resource_init_data:
+                logger.info(f"[{self.worker_id}] Setting up resources...")
+                setup_res = self._call_tool_sync("setup_batch_resources", {
+                    "resource_init_configs": resource_init_data,
+                    "allocated_resources": data
+                })
+                setup_result = self._parse_mcp_response(setup_res)
+                if setup_result.get("status") not in ["success", "partial_error"]:
+                    logger.error(f"Setup failed: {setup_result}")
+                    self.release_resource(self.worker_id)
+                    return False
+
+            # 3. 获取初始观察
+            self.get_inital_obs()
+            return True
+
+        except Exception as e:
+            logger.error(f"Allocate resource exception: {e}")
+            return False
+
+    def release_resource(self, worker_id: str, reset: bool = True) -> None:
+        """
+        统一释放所有已分配的资源 (MCP 模式)
+        """
+        logger.info(f"Worker [{worker_id}] releasing resources via MCP...")
+        try:
+            self._call_tool_sync("teardown_environment", {"worker_id": worker_id})
+            self.allocated_resources.clear()
+            logger.info(f"Worker [{worker_id}] release completed.")
+        except Exception as e:
+            logger.error(f"Failed to release resources: {e}")
+
+    def get_allocated_resource_id(self) -> str:
+        return self.worker_id
