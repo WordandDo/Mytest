@@ -32,7 +32,7 @@
         "provider_name": "aliyun",
         "region": "${ALIYUN_REGION}",
         "os_type": "Ubuntu",
-        "snapshot_name": "init_state",
+        "snapshot_name": "s-2zee3zv66pbvwx6ncwnm",
         "screen_size": [1920, 1080],
         "headless": true,
         "client_password": "${CLIENT_PASSWORD}",

@@ -166,47 +166,70 @@ class AliyunProvider(Provider):
             )
             raise
 
+
     def revert_to_snapshot(self, path_to_vm: str, snapshot_name: str):
         logger.info(
-            f"Reverting Aliyun ECS instance to snapshot image: {snapshot_name}..."
+            f"Reverting Aliyun ECS instance to snapshot image: {snapshot_name} (In-place Rollback)..."
         )
+        
+        new_instance_id = path_to_vm # In-place revert preserves the instance ID.
 
         try:
-            logger.info(f"Snapshot revert requested for instance {path_to_vm} (snapshot={snapshot_name})")
-            # Step 1: Retrieve the original instance details
-            response = self._describe_instance(path_to_vm)
-            if not response.body.instances.instance:
-                logger.error(f"Instance {path_to_vm} not found")
-                return
-
-            # Step 1.1: Ensure the instance is no longer in transitional states
+            # 1. 确保实例处于稳定状态
             self._wait_until_instance_stable(path_to_vm)
-
-            # Step 2: Delete the old instance
-            self._delete_instance_with_retries(path_to_vm)
-
-            # Step 3: Launch a new instance from the snapshot image
-            # 注意：_allocate_vm() 内部已经记录了实例创建，这里不需要重复记录
-            new_instance_id = _allocate_vm()
-            logger.info(f"Instance {new_instance_id} is ready.")
-
-            # Get VNC access information
-            ip_address = self.get_ip_address(new_instance_id)
             
-            # 记录IP地址（_allocate_vm()可能还没有IP地址）
+            # 2. 停止实例 (Stop Instance) - 阿里云要求实例停止才能回滚云盘
+            status = self._get_instance_status(path_to_vm)
+            if status == "Running":
+                logger.info(f"Stopping instance {path_to_vm} before disk rollback...")
+                stop_req = ecs_models.StopInstanceRequest(instance_id=path_to_vm, force_stop=True)
+                self.client.stop_instance(stop_req)
+                self._wait_for_instance_status(path_to_vm, "Stopped") 
+            elif status != "Stopped":
+                # 如果处于 Stopping 或其他状态，等待其达到 Stopped
+                self._wait_for_instance_status(path_to_vm, "Stopped") 
+            
+            # 3. 获取系统盘 ID (Get System Disk ID)
+            system_disk_id = self._get_system_disk_id(path_to_vm)
+            
+            # 4. 执行云盘回滚 (Reset Disk)
+            logger.info(f"Rolling back disk {system_disk_id} using snapshot ID {snapshot_name}...")
+            reset_disk_req = ecs_models.ResetDiskRequest(
+                disk_id=system_disk_id,
+                snapshot_id=snapshot_name
+            )
+            self.client.reset_disk(reset_disk_req)
+            logger.info(f"Disk rollback requested for {system_disk_id}. Waiting for completion...")
+
+            # 【关键修复】等待云盘回滚完成 (状态变为 In_use)
+            # 只有云盘恢复到 In_use 状态，实例才能被启动
+            self._wait_for_disk_status(system_disk_id, target_status="In_use")
+
+            # 5. 启动实例 (Start Instance)
+            logger.info(f"Starting instance {path_to_vm} after disk rollback...")
+            start_req = ecs_models.StartInstanceRequest(instance_id=path_to_vm)
+            self.client.start_instance(start_req)
+            
+            # 6. 等待实例运行并检查桌面服务就绪
+            _wait_for_instance_running(self.client, path_to_vm)
+            
+            # 7. 获取 IP 并等待桌面服务就绪 (IP可能会变，但实例ID不变)
+            ip_address = self.get_ip_address(path_to_vm)
+            
+            # 8. 记录 IP 地址
             if ip_address:
                 try:
                     from utils.instance_tracker import get_instance_tracker
                     tracker = get_instance_tracker()
-                    tracker.record_instance_ip(new_instance_id, ip_address)
+                    tracker.record_instance_ip(path_to_vm, ip_address) 
                 except Exception as e:
                     logger.warning(f"Failed to record instance IP: {e}")
 
-            return new_instance_id
-
+            return new_instance_id # 返回原始实例 ID
+            
         except Exception as e:
             logger.error(
-                f"Failed to revert to snapshot {snapshot_name} for the instance {path_to_vm}: {str(e)}"
+                f"Failed to revert to snapshot {snapshot_name} for the instance {path_to_vm} using in-place rollback: {str(e)}"
             )
             raise
 
@@ -248,6 +271,75 @@ class AliyunProvider(Provider):
         if not response.body.instances.instance:
             raise ValueError(f"Instance {instance_id} not found")
         return response.body.instances.instance[0].status
+
+    def _get_system_disk_id(self, instance_id: str) -> str:
+        """调用 DescribeDisks 获取实例的系统盘ID"""
+        req = ecs_models.DescribeDisksRequest(
+            region_id=self.region,
+            instance_id=instance_id,
+            disk_type='system'  # 筛选系统盘
+        )
+        # client.describe_disks() 需要手动引入 alibabacloud_ecs20140526.models
+        response = self.client.describe_disks(req) 
+        
+        if response.body.disks.disk and response.body.disks.disk[0]:
+            return response.body.disks.disk[0].disk_id
+        
+        raise ValueError(f"System disk not found for instance {instance_id}")
+
+    def _wait_for_disk_status(self, disk_id: str, target_status: str = "In_use", timeout: int = 300, interval: int = 5):
+        """
+        等待云盘恢复到指定状态 (例如回滚完成后的 'In_use' 状态)
+        """
+        start_time = time.time()
+        logger.info(f"Waiting for disk {disk_id} to become '{target_status}'...")
+        
+        while True:
+            try:
+                # 查询指定磁盘的状态
+                req = ecs_models.DescribeDisksRequest(
+                    region_id=self.region,
+                    disk_ids=UtilClient.to_jsonstring([disk_id])
+                )
+                response = self.client.describe_disks(req)
+                
+                if response.body.disks.disk:
+                    current_status = response.body.disks.disk[0].status
+                    
+                    if current_status == target_status:
+                        logger.info(f"Disk {disk_id} status is now '{target_status}'. Rollback complete.")
+                        return
+                    
+                    # 打印中间状态 (如 Resetting)
+                    logger.info(f"Disk {disk_id} status is '{current_status}', waiting for '{target_status}'... ({int(time.time() - start_time)}s)")
+                else:
+                    logger.warning(f"Disk {disk_id} not found during wait.")
+
+            except Exception as e:
+                logger.warning(f"Error checking disk status: {e}")
+
+            # 超时检查
+            if time.time() - start_time > timeout:
+                raise TimeoutError(f"Disk {disk_id} failed to reach '{target_status}' within {timeout}s.")
+            
+            time.sleep(interval)
+
+    def _wait_for_instance_status(self, instance_id: str, target_status: str, timeout: int = 300, interval: int = 5):
+        """等待实例达到指定状态 (如 'Stopped')"""
+        start_time = time.time()
+        while True:
+            status = self._get_instance_status(instance_id)
+            if status == target_status:
+                logger.info(f"Instance {instance_id} status is now '{target_status}'.")
+                return status
+            
+            elapsed = time.time() - start_time
+            if elapsed >= timeout:
+                raise TimeoutError(
+                    f"Instance {instance_id} failed to reach '{target_status}' state within {timeout}s. Current status: {status}"
+                )
+            logger.info(f"Instance {instance_id} status is '{status}', waiting for '{target_status}'... ({int(elapsed)}s elapsed)")
+            time.sleep(interval)
 
     def get_instance_status(self, instance_id: str) -> str:
         """
