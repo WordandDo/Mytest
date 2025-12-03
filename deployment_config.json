@@ -39,7 +39,7 @@
       "enabled": true,
       "implementation_class": "utils.resource_pools.vm_pool.VMPoolImpl",
       "config": {
-        "num_vms": 1,
+        "num_vms": 3,
         "provider_name": "aliyun",
         
         "// [修改 1] 将地区改为读取环境变量 ALIYUN_REGION (您的 .env 中是 cn-beijing)": "",
@@ -70,7 +70,7 @@
       "enabled": true,
       "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
       "config": {
-        "num_rag_workers": 2,
+        "num_rag_workers": 3,
         "rag_kb_path": "",
         "rag_index_path": "/home/a1/sdb/wikidata4rag/rag_index_20230401-10samples",
         "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
