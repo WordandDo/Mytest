@@ -128,19 +128,20 @@ def _get_controller(worker_id: str) -> PythonController:
 
 # --- 生命周期工具 (Group: computer_lifecycle) ---
 
-@ToolRegistry.register_tool("computer_lifecycle")
+@ToolRegistry.register_tool("computer_lifecycle", hidden=True)
 async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_script: str = "") -> str:
     """
-    初始化 VM 会话：直接申请 VM 资源并初始化控制器。
+    [System Tool] Initialize VM session.
+    Allocates VM resources and initializes the controller.
     
     Args:
-        config_name: 配置名称，用于决定申请哪种类型的 VM 资源。
-                     - 包含 "computer_13" -> 申请 "vm_computer_13"
-                     - 包含 "pyautogui" -> 申请 "vm_pyautogui"
-                     - 其他 -> 默认为 "vm_pyautogui"
-        task_id: 任务 ID
+        config_name: Configuration name, used to determine which type of VM resource to apply for.
+                     - Contains "computer_13" -> apply for "vm_computer_13"
+                     - Contains "pyautogui" -> apply for "vm_pyautogui"
+                     - Other -> defaults to "vm_pyautogui"
+        task_id: Task ID
         worker_id: Worker ID
-        init_script: 初始化脚本内容
+        init_script: Initialization script content
     """
     
     # 1. [核心修改] 动态资源类型选择
@@ -248,9 +249,12 @@ async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
 
-@ToolRegistry.register_tool("computer_lifecycle") # [新增注册]
+@ToolRegistry.register_tool("computer_lifecycle", hidden=True)
 async def teardown_environment(worker_id: str) -> str:
-    """释放资源"""
+    """
+    [System Tool] Teardown environment.
+    Releases resources associated with the session.
+    """
     session = GLOBAL_SESSIONS.get(worker_id)
     if session:
         env_id = session.get("env_id")
@@ -263,9 +267,12 @@ async def teardown_environment(worker_id: str) -> str:
         GLOBAL_SESSIONS.pop(worker_id, None)
     return "Released"
 
-@ToolRegistry.register_tool("computer_lifecycle") # [新增注册] 归类为生命周期或评估
+@ToolRegistry.register_tool("computer_lifecycle", hidden=True)
 async def evaluate_task(worker_id: str) -> str:
-    """评估任务执行结果"""
+    """
+    [System Tool] Evaluate task result.
+    Calculates the score based on the evaluator configuration.
+    """
     session = GLOBAL_SESSIONS.get(worker_id)
     
     # 检查session是否存在以及是否有evaluator配置
@@ -288,9 +295,11 @@ async def evaluate_task(worker_id: str) -> str:
 # --- 观察工具 (Group: desktop_observation) ---
 
 
-@ToolRegistry.register_tool("desktop_observation")
+@ToolRegistry.register_tool("desktop_observation", hidden=True)
 async def start_recording(worker_id: str) -> str:
-    """[新增] 开始屏幕录制"""
+    """
+    [System Tool] Start screen recording.
+    """
     try:
         ctrl = _get_controller(worker_id)
         ctrl.start_recording()
@@ -298,10 +307,10 @@ async def start_recording(worker_id: str) -> str:
     except Exception as e:
         return f"Failed to start recording: {str(e)}"
 
-@ToolRegistry.register_tool("desktop_observation")
+@ToolRegistry.register_tool("desktop_observation", hidden=True)
 async def stop_recording(worker_id: str, save_path: str) -> str:
-    """[新增] 停止录制并保存文件
-    注意：save_path 是 Gateway 服务器本地的文件路径
+    """
+    [System Tool] Stop recording and save file.
     """
     try:
         ctrl = _get_controller(worker_id)
@@ -321,8 +330,8 @@ async def stop_recording(worker_id: str, save_path: str) -> str:
 
 async def _execute_and_capture(worker_id: str, action_logic: Callable) -> List[Union[TextContent, ImageContent]]:
     """
-    执行动作逻辑，并立即捕获当前屏幕状态和 A11y Tree。
-    返回符合 MCP 协议的多模态内容列表。
+    Execute the action logic and immediately capture the current screen state and A11y Tree.
+    Return a multimodal content list compliant with the MCP protocol.
     """
     contents = []
     
@@ -375,6 +384,9 @@ async def _execute_and_capture(worker_id: str, action_logic: Callable) -> List[U
 # 1. Computer 13 专属动作
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_mouse_move(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> list:
+    """
+    Move the mouse cursor to the specified coordinates.
+    """
     ctrl = _get_controller(worker_id)
     params = {}
     if x is not None and y is not None:
@@ -386,6 +398,9 @@ async def desktop_mouse_move(worker_id: str, x: Optional[int] = None, y: Optiona
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_mouse_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None, button: str = "left", num_clicks: int = 1) -> list:
+    """
+    Click the mouse at the specified coordinates.
+    """
     ctrl = _get_controller(worker_id)
     params = {"button": button, "num_clicks": num_clicks}
     if x is not None and y is not None:
@@ -397,6 +412,9 @@ async def desktop_mouse_click(worker_id: str, x: Optional[int] = None, y: Option
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_mouse_right_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> list:
+    """
+    Right-click the mouse at the specified coordinates.
+    """
     ctrl = _get_controller(worker_id)
     params = {}
     if x is not None and y is not None:
@@ -408,6 +426,9 @@ async def desktop_mouse_right_click(worker_id: str, x: Optional[int] = None, y: 
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_mouse_double_click(worker_id: str, x: Optional[int] = None, y: Optional[int] = None) -> list:
+    """
+    Double-click the mouse at the specified coordinates.
+    """
     ctrl = _get_controller(worker_id)
     params = {}
     if x is not None and y is not None:
@@ -419,6 +440,9 @@ async def desktop_mouse_double_click(worker_id: str, x: Optional[int] = None, y:
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_mouse_drag(worker_id: str, x: int, y: int) -> list:
+    """
+    Drag the mouse to the specified coordinates.
+    """
     ctrl = _get_controller(worker_id)
     return await _execute_and_capture(worker_id, lambda: 
         ctrl.execute_action({"action_type": "DRAG_TO", "parameters": {"x": x, "y": y}})
@@ -426,6 +450,9 @@ async def desktop_mouse_drag(worker_id: str, x: int, y: int) -> list:
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_scroll(worker_id: str, dx: Optional[int] = None, dy: Optional[int] = None) -> list:
+    """
+    Scroll the mouse wheel by the specified amount.
+    """
     ctrl = _get_controller(worker_id)
     params = {}
     if dx is not None: params["dx"] = dx
@@ -437,6 +464,9 @@ async def desktop_scroll(worker_id: str, dx: Optional[int] = None, dy: Optional[
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_type(worker_id: str, text: str) -> list:
+    """
+    Type the specified text.
+    """
     ctrl = _get_controller(worker_id)
     return await _execute_and_capture(worker_id, lambda: 
         ctrl.execute_action({"action_type": "TYPING", "parameters": {"text": text}})
@@ -444,6 +474,9 @@ async def desktop_type(worker_id: str, text: str) -> list:
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_key_press(worker_id: str, key: str) -> list:
+    """
+    Press the specified key.
+    """
     ctrl = _get_controller(worker_id)
     return await _execute_and_capture(worker_id, lambda: 
         ctrl.execute_action({"action_type": "PRESS", "parameters": {"key": key}})
@@ -451,6 +484,9 @@ async def desktop_key_press(worker_id: str, key: str) -> list:
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_key_hold(worker_id: str, key: str, action: str) -> list:
+    """
+    Hold or release the specified key.
+    """
     ctrl = _get_controller(worker_id)
     act_type = "KEY_DOWN" if action.lower() == "down" else "KEY_UP"
     return await _execute_and_capture(worker_id, lambda: 
@@ -459,6 +495,9 @@ async def desktop_key_hold(worker_id: str, key: str, action: str) -> list:
 
 @ToolRegistry.register_tool("desktop_action_computer13")
 async def desktop_hotkey(worker_id: str, keys: List[str]) -> list:
+    """
+    Press a combination of keys simultaneously.
+    """
     ctrl = _get_controller(worker_id)
     return await _execute_and_capture(worker_id, lambda: 
         ctrl.execute_action({"action_type": "HOTKEY", "parameters": {"keys": keys}})
@@ -467,6 +506,9 @@ async def desktop_hotkey(worker_id: str, keys: List[str]) -> list:
 # 2. PyAutoGUI 专属动作
 @ToolRegistry.register_tool("desktop_action_pyautogui")
 async def desktop_execute_python_script(worker_id: str, script: str) -> list:
+    """
+    Execute a Python script in the desktop environment.
+    """
     ctrl = _get_controller(worker_id)
     # execute_python_command 可能返回 dict 或 str
     return await _execute_and_capture(worker_id, lambda: 
@@ -477,6 +519,9 @@ async def desktop_execute_python_script(worker_id: str, script: str) -> list:
 @ToolRegistry.register_tool("desktop_action_computer13")
 @ToolRegistry.register_tool("desktop_action_pyautogui")
 async def desktop_mouse_button(worker_id: str, action: str, button: str = "left") -> list:
+    """
+    Press down or release the mouse button.
+    """
     ctrl = _get_controller(worker_id)
     act_type = "MOUSE_DOWN" if action.lower() == "down" else "MOUSE_UP"
     return await _execute_and_capture(worker_id, lambda: 
@@ -486,6 +531,9 @@ async def desktop_mouse_button(worker_id: str, action: str, button: str = "left"
 @ToolRegistry.register_tool("desktop_action_computer13")
 @ToolRegistry.register_tool("desktop_action_pyautogui")
 async def desktop_control(worker_id: str, action: str) -> list:
+    """
+    Execute a control action.
+    """
     ctrl = _get_controller(worker_id)
     act_str = action.upper()
     return await _execute_and_capture(worker_id, lambda: 

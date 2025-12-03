@@ -72,10 +72,9 @@ RAG_SESSIONS: Dict[str, Dict] = {}
 
 @ToolRegistry.register_tool("rag_lifecycle")
 async def setup_rag_session(worker_id: str) -> str:
-    """初始化 RAG 会话：申请访问 Token。
-    (原名 setup_rag_engine)
-    
-    此函数已移除客户端探活机制，通过设置长超时来支持服务端排队。
+    """
+    Initialize RAG session: Request an access token.
+    (Previously named setup_rag_engine). Supports server-side queuing with a long timeout.
     """
     req_timeout = 600.0  # 设置600秒的超时，允许在服务端排队
     target_resource_type = "rag"
@@ -113,7 +112,9 @@ async def setup_rag_session(worker_id: str) -> str:
 
 @ToolRegistry.register_tool("rag_query")
 async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] = None) -> str:
-    """远程查询知识库"""
+    """
+    Remotely query the knowledge base.
+    """
     session = RAG_SESSIONS.get(worker_id)
     if not session:
         return json.dumps({"status": "error", "message": "No active RAG session. Call setup_rag_engine first."})
@@ -157,7 +158,9 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] 
 
 @ToolRegistry.register_tool("rag_lifecycle")
 async def release_rag_session(worker_id: str) -> str:
-    """释放 RAG 资源会话"""
+    """
+    Release the RAG resource session.
+    """
     session = RAG_SESSIONS.pop(worker_id, None)
     if session:
         async with httpx.AsyncClient() as client:

@@ -16,11 +16,22 @@ class ToolRegistry:
     _REGISTRY: Dict[str, List[Callable]] = {}
 
     @classmethod
-    def register_tool(cls, group_name: str):
+    def register_tool(cls, group_name: str, hidden: bool = False):
         """
         装饰器：用于将函数注册到指定的工具组
+        
+        :param group_name: 工具组名称
+        :param hidden: 是否为隐藏工具（不暴露给 LLM，但可通过代码调用）
         """
         def decorator(func: Callable):
+            # 如果标记为隐藏，在文档字符串前添加特殊标记
+            if hidden:
+                original_doc = func.__doc__ or ""
+                # 使用特殊前缀标记，稍后在 Client 端解析时过滤
+                func.__doc__ = f"[HIDDEN] {original_doc}"
+                # 同时也给函数对象打上标记（供内部逻辑使用）
+                func.hidden = True
+
             if group_name not in cls._REGISTRY:
                 cls._REGISTRY[group_name] = []
             

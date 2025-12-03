@@ -436,7 +436,7 @@ class HttpMCPEnv:
             logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
             mcp_tools = self._list_tools_sync()
 
-            # 黑名单：Agent 不应直接调用的系统工具
+            # 1. 显式黑名单（保留以防万一）
             blacklist = {
                 "get_observation", "evaluate_task",
                 "allocate_batch_resources", "setup_batch_resources",
@@ -444,9 +444,23 @@ class HttpMCPEnv:
                 "setup_rag_session", "teardown_environment", "release_rag_session",
             }
 
-            valid_tools = [t for t in mcp_tools if t.name not in blacklist]
-            self.tool_schemas = [self._convert_mcp_tool_to_openai(t) for t in valid_tools]
+            valid_tools = []
+            for t in mcp_tools:
+                # 检查是否在黑名单中
+                if t.name in blacklist:
+                    continue
+                
+                # 2. [新增] 检查 Description 中的隐藏标记
+                # t.description 来自函数的 Docstring，如果包含 [HIDDEN] 则跳过
+                description = t.description or ""
+                if description.startswith("[HIDDEN]"):
+                    continue
+                
+                valid_tools.append(t)
 
+            # 生成 Schema 和描述字符串给 LLM
+            self.tool_schemas = [self._convert_mcp_tool_to_openai(t) for t in valid_tools]
+            
             descriptions = [f"- {t.name}: {t.description or 'No description.'}" for t in valid_tools]
             self.tool_descriptions = "\n".join(descriptions)
 

@@ -15,8 +15,8 @@ logger = logging.getLogger("SystemTools")
 @ToolRegistry.register_tool("system_resource")
 async def allocate_batch_resources(worker_id: str, resource_types: list[str], timeout: int = 600) -> str:
     """
-    [系统工具] 原子化批量申请资源。
-    直接与 Resource API 通信，确保多个资源要么全有，要么全无，避免死锁。
+    [System Tool] Atomically allocate a batch of resources.
+    Communicates directly with the Resource API to ensure all resources are allocated together or none at all, preventing deadlocks.
     """
     if not resource_types:
         return json.dumps({"status": "error", "message": "resource_types cannot be empty"})
@@ -43,11 +43,11 @@ async def allocate_batch_resources(worker_id: str, resource_types: list[str], ti
             return json.dumps({"status": "error", "message": f"System Allocation Failed: {str(e)}"})
 
 # [新增] 统一的批量资源释放工具
-@ToolRegistry.register_tool("system_resource")
+@ToolRegistry.register_tool("system_resource", hidden=True)
 async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> str:
     """
-    [系统工具] 批量释放资源。
-    接收资源 ID 列表，逐一调用 Resource API 释放接口。
+    [System Tool] Batch release resources.
+    Accepts a list of resource IDs and releases them one by one via the Resource API.
     """
     if not resource_ids:
         return json.dumps({"status": "success", "message": "No resources to release"})
@@ -79,8 +79,8 @@ async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> st
 @ToolRegistry.register_tool("system_resource")
 async def get_batch_initial_observations(worker_id: str) -> str:
     """
-    [系统工具] 获取当前已分配给 Worker 的所有资源的初始观测数据。
-    返回 JSON 格式的字典，Key 为资源类型（如 'vm', 'rag'），Value 为观测数据或 null。
+    [System Tool] Retrieve initial observations for all resources currently allocated to the worker.
+    Returns a JSON dictionary where keys are resource types (e.g., 'vm', 'rag') and values are observation data or null.
     """
     async with httpx.AsyncClient() as client:
         try:
@@ -103,17 +103,17 @@ async def get_batch_initial_observations(worker_id: str) -> str:
             return json.dumps({"error": f"System Tool Failed: {str(e)}"})
 
 # [修改] 注册通用资源初始化工具
-@ToolRegistry.register_tool("system_resource")
+@ToolRegistry.register_tool("system_resource", hidden=True)
 async def setup_batch_resources(worker_id: str, resource_init_configs: dict, allocated_resources: dict = {}) -> str:
     """
-    [通用系统工具] 动态初始化资源。
-    自动根据 res_type 寻找 mcp_server.{res_type}_server 模块下的初始化函数。
-    无需为新资源修改此代码。
+    [System Tool] Dynamically initialize resources.
+    Automatically finds the initialization function in 'mcp_server.{res_type}_server' based on the resource type.
+    No need to modify this code for new resources.
 
     Args:
         worker_id: Worker ID
-        resource_init_configs: 初始化配置字典
-        allocated_resources: 原子分配返回的资源信息（可选，用于状态同步）
+        resource_init_configs: Initialization configuration dictionary
+        allocated_resources: Allocated resource information (optional, for state synchronization)
     """
     results = {}
     overall_success = True
