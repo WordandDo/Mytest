@@ -297,26 +297,26 @@ class GenericResourceManager:
             
         return results
 
-    # [修改] top_k 类型改为 Optional[int] = None
-    def query_rag(self, resource_id: str, worker_id: str, query: str, top_k: Optional[int] = None) -> str:
-        """
-        RAG查询方法
-        
-        Args:
-            resource_id: 资源ID
-            worker_id: 工作节点ID
-            query: 查询内容
-            top_k: 返回结果数量（可选）
-            
-        Returns:
-            查询结果文本
-            
-        Raises:
-            RuntimeError: RAG资源池未初始化
-        """
-        # RAG 特有方法的特殊处理
-        rag_pool = self.pools.get("rag")
-        if not rag_pool:
-            raise RuntimeError("RAG Pool not initialized")
-        # 调用RAG资源池的查询方法
-        return rag_pool.process_query(resource_id, worker_id, query, top_k)
+    # [删除] 之前的 query_rag 方法
+    # def query_rag(self, resource_id: str, worker_id: str, query: str, top_k: Optional[int] = None) -> str:
+    #     """
+    #     RAG查询方法
+    #     
+    #     Args:
+    #         resource_id: 资源ID
+    #         worker_id: 工作节点ID
+    #         query: 查询内容
+    #         top_k: 返回结果数量（可选）
+    #         
+    #     Returns:
+    #         查询结果文本
+    #     
+    #     Raises:
+    #         RuntimeError: RAG资源池未初始化
+    #     """
+    #     # RAG 特有方法的特殊处理
+    #     rag_pool = self.pools.get("rag")
+    #     if not rag_pool:
+    #         raise RuntimeError("RAG Pool not initialized")
+    #     # 调用RAG资源池的查询方法
+    #     return rag_pool.process_query(resource_id, worker_id, query, top_k)

@@ -193,23 +193,6 @@ class GetObsReq(BaseModel):
     """
     worker_id: str
 
-# [修改] 将top_k改为Optional，默认为None，表示"使用服务器配置的默认值"
-class RAGQueryReq(BaseModel):
-    """
-    RAG查询请求模型
-    
-    Attributes:
-        resource_id: 资源ID
-        worker_id: 工作节点ID
-        query: 查询内容
-        top_k: 返回结果数量（可选，None表示使用服务器默认值）
-    """
-    resource_id: str
-    worker_id: str
-    query: str
-    # [修改] 改为 Optional，默认为 None，表示"使用服务器配置的默认值"
-    top_k: Optional[int] = None
-
 # =========================================================================
 # [标准资源生命周期接口]
 # 提供适用于所有资源类型的通用操作接口
@@ -313,40 +296,6 @@ def get_status():
 # [特定资源操作接口]
 # 为特定资源类型提供的专用操作接口
 # =========================================================================
-
-# [修改] 直接透传 None 给 Manager，由底层决定最终数值
-@app.post("/query_rag")
-def query_rag_service(req: RAGQueryReq):
-    """
-    RAG查询接口
-    
-    Args:
-        req: RAG查询请求
-        
-    Returns:
-        查询结果
-        
-    Raises:
-        HTTPException: 查询过程中出现错误
-    """
-    # [新增] 检查 manager 是否已初始化
-    if manager is None:
-        logger.error("Resource Manager is not initialized.")
-        raise HTTPException(status_code=503, detail="Service not initialized")
-        
-    try:
-        # [Log] 记录RAG查询
-        logger.info(f"🔍 [RAGQuery] Worker={req.worker_id} Resource={req.resource_id}")
-        # 调用管理器执行RAG查询
-        result_text = manager.query_rag(req.resource_id, req.worker_id, req.query, req.top_k)
-        return {"status": "success", "results": result_text}
-    except PermissionError as e:
-        logger.warning(f"⚠️ [RAGQuery] Permission denied for {req.worker_id}: {e}")
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        # [Log] 记录RAG查询错误，并包含完整堆栈信息
-        logger.error(f"❌ [RAGQuery] Error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 # [新增] 获取初始观测数据的 API
 @app.post("/get_initial_observations")

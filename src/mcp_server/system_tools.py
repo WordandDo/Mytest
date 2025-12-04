@@ -1,9 +1,10 @@
-# src/mcp_server/system_tools.py
+from typing import Any# src/mcp_server/system_tools.py
 import os
 import json
 import httpx
 import importlib
 import logging
+from typing import Any
 from mcp_server.core.registry import ToolRegistry
 
 # 从环境变量获取 API 地址
@@ -75,32 +76,69 @@ async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> st
     
     return json.dumps({"status": "completed", "details": results})
 
-# [新增] 注册获取初始 Observation 的工具
+# [修改] 注册获取初始 Observation 的工具
 @ToolRegistry.register_tool("system_resource")
 async def get_batch_initial_observations(worker_id: str) -> str:
     """
-    [System Tool] Retrieve initial observations for all resources currently allocated to the worker.
-    Returns a JSON dictionary where keys are resource types (e.g., 'vm', 'rag') and values are observation data or null.
+    [System Tool] Retrieve initial observations directly from local session controllers.
     """
-    async with httpx.AsyncClient() as client:
+    observations = {}
+    
+    # 定义资源类型到模块的映射 (与 _sync_resource_sessions 中保持一致)
+    vm_module_map = {
+        "vm_pyautogui": "mcp_server.vm_pyautogui_server",
+        "vm_computer_13": "mcp_server.vm_computer_13_server"
+    }
+
+    # 1. 尝试从 VM 模块获取截图
+    for res_type, module_name in vm_module_map.items():
         try:
-            resp = await client.post(
-                f"{RESOURCE_API_URL}/get_initial_observations",
-                json={"worker_id": worker_id},
-                timeout=10.0 # 给 VM 截图留出足够时间
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            
-            if data.get("status") == "success":
-                return json.dumps(data.get("observations", {}))
-            else:
-                # API 返回错误状态
-                return json.dumps({"error": data.get("message", "Unknown error from Resource API")})
+            module = importlib.import_module(module_name)
+            # 检查该模块是否有会话记录
+            if hasattr(module, "GLOBAL_SESSIONS"):
+                sessions = getattr(module, "GLOBAL_SESSIONS")
+                session = sessions.get(worker_id)
                 
+                if session and "controller" in session:
+                    controller = session["controller"]
+                    
+                    # === 获取截图 ===
+                    screenshot = controller.get_screenshot()
+                    screenshot_b64 = None
+                    if screenshot:
+                        import base64
+                        screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
+                    
+                    # === 获取 Accessibility Tree ===
+                    a11y_tree = controller.get_accessibility_tree()
+                    
+                    # 构造返回数据
+                    if screenshot_b64 or a11y_tree:
+                        observations[res_type] = {
+                            "screenshot": screenshot_b64,
+                            "accessibility_tree": a11y_tree,
+                            "message": "Observation fetched from local controller"
+                        }
+                    else:
+                        observations[res_type] = None
         except Exception as e:
-            # 网络或系统异常，返回空 JSON
-            return json.dumps({"error": f"System Tool Failed: {str(e)}"})
+            logger.error(f"Error fetching obs for {res_type}: {e}")
+            observations[res_type] = {"error": str(e)}
+
+    # 2. 尝试获取 RAG 状态 (RAG 通常没有截图，保持原状或返回状态)
+    # RAG 的状态通常是静态的，这里可以简单返回 ready 或者去 ResourceAPI 查，
+    # 但为了简化，如果 RAG 已分配，我们可以返回一个简单的状态对象
+    try:
+        from mcp_server.rag_server import RAG_SESSIONS
+        if worker_id in RAG_SESSIONS:
+            observations["rag"] = {
+                "status": "ready", 
+                "message": "RAG session active"
+            }
+    except ImportError:
+        pass
+
+    return json.dumps(observations)
 
 # [修改] 注册通用资源初始化工具
 @ToolRegistry.register_tool("system_resource", hidden=True)
@@ -196,28 +234,46 @@ async def _sync_resource_sessions(worker_id: str, allocated_resources: dict):
         except ImportError:
             pass
 
-    # 同步 VM 资源
-    vm_types = ["vm", "vm_pyautogui", "vm_computer_13"]
-    for vm_type in vm_types:
-        if vm_type in allocated_resources:
-            vm_info = allocated_resources[vm_type]
-            vm_ip = vm_info.get("ip")
-            vm_port = vm_info.get("port", 5000)
-            env_id = vm_info.get("id")
+    # [修复] 同步 VM 资源
+    # 定义资源类型到模块名的映射 (osworld_server 已被移除)
+    vm_module_map = {
+        "vm_pyautogui": "mcp_server.vm_pyautogui_server",
+        "vm_computer_13": "mcp_server.vm_computer_13_server"
+    }
+
+    # 遍历分配的资源，查找是否有 VM 类型的资源
+    for res_type, res_info in allocated_resources.items():
+        # 如果该资源类型在映射表中，则进行同步
+        if res_type in vm_module_map:
+            module_name = vm_module_map[res_type]
+            vm_ip = res_info.get("ip")
+            vm_port = res_info.get("port", 5000)
+            env_id = res_info.get("id")
 
             if vm_ip and env_id:
                 try:
-                    from mcp_server.osworld_server import GLOBAL_SESSIONS
-                    from src.utils.desktop_env.controllers.python import PythonController
-                    controller = PythonController(vm_ip=vm_ip, server_port=vm_port)
-                    GLOBAL_SESSIONS[worker_id] = {
-                        "controller": controller,
-                        "env_id": env_id,
-                        "task_id": "batch_allocated"
-                    }
-                    logger.info(f"[{worker_id}] Synced VM session")
+                    # 动态导入对应的 Server 模块
+                    module = importlib.import_module(module_name)
+                    
+                    # 获取该模块的 GLOBAL_SESSIONS
+                    if hasattr(module, "GLOBAL_SESSIONS"):
+                        target_sessions = getattr(module, "GLOBAL_SESSIONS")
+                        
+                        from src.utils.desktop_env.controllers.python import PythonController
+                        controller = PythonController(vm_ip=vm_ip, server_port=vm_port)
+                        
+                        # [关键] 写入目标模块的会话字典
+                        target_sessions[worker_id] = {
+                            "controller": controller,
+                            "env_id": env_id,
+                            "task_id": "batch_allocated"
+                        }
+                        logger.info(f"[{worker_id}] Synced VM session to {module_name}")
+                    else:
+                        logger.error(f"[{worker_id}] Module {module_name} has no GLOBAL_SESSIONS")
+                        
                 except Exception as e:
-                    logger.error(f"[{worker_id}] VM sync failed: {e}")
+                    logger.error(f"[{worker_id}] VM sync failed for {res_type}: {e}")
 
 async def _cleanup_resource_sessions(worker_id: str):
     """
@@ -232,11 +288,19 @@ async def _cleanup_resource_sessions(worker_id: str):
     except ImportError:
         pass
 
-    # 清理 VM
-    try:
-        from mcp_server.osworld_server import GLOBAL_SESSIONS
-        if worker_id in GLOBAL_SESSIONS:
-            del GLOBAL_SESSIONS[worker_id]
-            logger.info(f"[{worker_id}] Cleaned up VM session")
-    except ImportError:
-        pass
+    # 清理所有已知 VM 模块的会话 (已移除 osworld)
+    vm_modules = [
+        "mcp_server.vm_pyautogui_server",
+        "mcp_server.vm_computer_13_server"
+    ]
+    
+    for module_name in vm_modules:
+        try:
+            module = importlib.import_module(module_name)
+            if hasattr(module, "GLOBAL_SESSIONS"):
+                target_sessions = getattr(module, "GLOBAL_SESSIONS")
+                if worker_id in target_sessions:
+                    del target_sessions[worker_id]
+                    logger.info(f"[{worker_id}] Cleaned up session in {module_name}")
+        except ImportError:
+            pass

@@ -192,6 +192,13 @@ class HttpMCPEnv:
 
         # 注入初始观察
         initial_obs = getattr(self, "initial_observation", None)
+        
+        # === [LOG 3: 检查主观察状态] ===
+        if initial_obs:
+            logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] Initial Observation Status: Present for injection.")
+        else:
+            logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] Initial Observation Status: Not present for injection.")
+            
         if initial_obs and isinstance(initial_obs, dict):
             if initial_obs.get("screenshot"):
                 user_content.append({
@@ -213,6 +220,11 @@ class HttpMCPEnv:
                 })
 
         messages.append({"role": "user", "content": user_content})
+
+        # === [LOG 4: 检查注入后的用户消息 (已截断)] ===
+        # 使用 self._truncate_data 处理 messages[1]
+        safe_msg = self._truncate_data(messages[1], max_len=200)
+        logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] First User Message Content (Check Injection): {json.dumps(safe_msg, indent=2, ensure_ascii=False)}")
 
         client = self._get_openai_client()
         turn_count = 0
@@ -569,7 +581,12 @@ class HttpMCPEnv:
             # 调用系统工具获取所有资源的初始观察
             res = self._call_tool_sync("get_batch_initial_observations", {"worker_id": self.worker_id})
             data = self._parse_mcp_response(res) 
-
+            
+            # === [LOG 1: 原始观察数据 (已截断)] ===
+            # 使用 self._truncate_data 处理 data
+            safe_data = self._truncate_data(data, max_len=100)
+            logger.info(f"[{self.worker_id}] [OBS_LOG] Raw observation data from MCP (Truncated): {json.dumps(safe_data, indent=2, ensure_ascii=False)}")
+            
             if isinstance(data, dict) and "error" not in data:
                 # 2. 遍历并应用黑名单过滤
                 for resource_type, obs_content in data.items():
@@ -603,6 +620,17 @@ class HttpMCPEnv:
             else:
                 logger.warning(f"[{self.worker_id}] Failed to fetch obs: {data.get('error')}")
                 
+            # === [LOG 2: 过滤后的最终观察 (已截断)] ===
+            # 使用 self._truncate_data 处理 combined_obs
+            safe_obs = self._truncate_data(combined_obs, max_len=100)
+            logger.info(f"[{self.worker_id}] [OBS_LOG] Final combined observations (Filtered & Truncated): {json.dumps(safe_obs, indent=2, ensure_ascii=False)}")
+            
+            if self.initial_observation:
+                # 仅打印主观察的键，避免日志中出现巨大的 base64 截图字符串
+                logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation SET. Keys: {list(self.initial_observation.keys())}")
+            else:
+                logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation is None.")
+
             return combined_obs
         except Exception as e:
             logger.error(f"[{self.worker_id}] Obs fetch error: {e}")
@@ -752,3 +780,19 @@ class HttpMCPEnv:
             self.env_close()
         except Exception as e:
             logger.error(f"[{wid}] Cleanup failed: {e}")
+
+    def _truncate_data(self, data: Any, max_len: int = 100) -> Any:
+        """
+        辅助函数：递归截断数据结构中的长字符串，仅用于日志展示。
+        """
+        if isinstance(data, dict):
+            return {k: self._truncate_data(v, max_len) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._truncate_data(i, max_len) for i in data]
+        elif isinstance(data, str):
+            if len(data) > max_len:
+                # 保留前 max_len 个字符，并提示总长度
+                return f"{data[:max_len]}... [TRUNCATED, total_len={len(data)}]"
+            return data
+        else:
+            return data

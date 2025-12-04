@@ -38,9 +38,9 @@ GLOBAL_SESSIONS = {}
 
 # --- 通用功能提取 (与 os_pyautogui_server 保持一致) ---
 
-async def vm_initialization(worker_id: str, config_content = None) -> bool:
+async def vm_computer_13_initialization(worker_id: str, config_content = None) -> bool:
     """
-    VM资源初始化函数，用于解析Benchmark特有的数据结构并执行初始化操作
+    VM Computer 13 资源初始化函数，用于解析Benchmark特有的数据结构并执行初始化操作
     """
     # 防御性编程：无配置即成功
     if not config_content:
@@ -58,7 +58,7 @@ async def vm_initialization(worker_id: str, config_content = None) -> bool:
                 init_script = json.dumps(config_content) if isinstance(config_content, dict) else config_content
                 logger.info(f"[{worker_id}] Session not found, calling setup_vm_session")
                 # 注意：此处自动初始化仍调用 setup_vm_session，它会硬编码资源类型
-                result_json = await setup_vm_session(
+                result_json = await setup_computer_13_session(
                     config_name="auto_init",
                     task_id="unknown",
                     worker_id=worker_id,
@@ -116,7 +116,7 @@ async def vm_initialization(worker_id: str, config_content = None) -> bool:
 def _get_controller(worker_id: str) -> PythonController:
     session = GLOBAL_SESSIONS.get(worker_id)
     if not session or not session.get("controller"):
-        raise RuntimeError(f"Session not found for worker: {worker_id}. Call 'setup_vm_session' first.")
+        raise RuntimeError(f"Session not found for worker: {worker_id}. Call 'setup_computer_13_session' first.")
     return session["controller"]
 
 async def _execute_and_capture(worker_id: str, action_logic: Callable) -> List[Union[TextContent, ImageContent]]:
@@ -170,9 +170,9 @@ async def _execute_and_capture(worker_id: str, action_logic: Callable) -> List[U
 # --- 生命周期工具 (Group: computer_lifecycle) ---
 
 @ToolRegistry.register_tool("computer_lifecycle", hidden=True)
-async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_script: str = "") -> str:
+async def setup_computer_13_session(config_name: str, task_id: str, worker_id: str, init_script: str = "") -> str:
     """
-    [System Tool] Initialize VM session.
+    [System Tool] Initialize VM Computer 13 session.
     Allocates VM resources and initializes the controller.
     
     Args:
@@ -267,9 +267,9 @@ async def setup_vm_session(config_name: str, task_id: str, worker_id: str, init_
         return json.dumps({"status": "error", "message": str(e)})
 
 @ToolRegistry.register_tool("computer_lifecycle", hidden=True)
-async def teardown_environment(worker_id: str) -> str:
+async def teardown_computer_13_environment(worker_id: str) -> str:
     """
-    [System Tool] Teardown environment.
+    [System Tool] Teardown computer 13 environment.
     Releases resources associated with the session.
     """
     session = GLOBAL_SESSIONS.get(worker_id)
@@ -285,9 +285,9 @@ async def teardown_environment(worker_id: str) -> str:
     return "Released"
 
 @ToolRegistry.register_tool("computer_lifecycle", hidden=True)
-async def evaluate_task(worker_id: str) -> str:
+async def evaluate_computer_13_task(worker_id: str) -> str:
     """
-    [System Tool] Evaluate task result.
+    [System Tool] Evaluate computer 13 task result.
     Calculates the score based on the evaluator configuration.
     """
     session = GLOBAL_SESSIONS.get(worker_id)
@@ -305,9 +305,9 @@ async def evaluate_task(worker_id: str) -> str:
 # --- 观察工具 (Group: desktop_observation) ---
 
 @ToolRegistry.register_tool("desktop_observation", hidden=True)
-async def start_recording(worker_id: str) -> str:
+async def start_computer_13_recording(worker_id: str) -> str:
     """
-    [System Tool] Start screen recording.
+    [System Tool] Start screen recording for Computer 13.
     """
     try:
         ctrl = _get_controller(worker_id)
@@ -317,9 +317,9 @@ async def start_recording(worker_id: str) -> str:
         return f"Failed to start recording: {str(e)}"
 
 @ToolRegistry.register_tool("desktop_observation", hidden=True)
-async def stop_recording(worker_id: str, save_path: str) -> str:
+async def stop_computer_13_recording(worker_id: str, save_path: str) -> str:
     """
-    [System Tool] Stop recording and save file.
+    [System Tool] Stop recording and save file for Computer 13.
     """
     try:
         ctrl = _get_controller(worker_id)

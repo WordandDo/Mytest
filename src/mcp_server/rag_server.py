@@ -20,7 +20,7 @@ load_dotenv()
 mcp = FastMCP("RAG Specialized Gateway")
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 
-print("🚀 Starting RAG MCP Server (Client Mode)")
+print("🚀 Starting RAG MCP Server (Direct Connect Mode)")
 
 # RAG初始化函数
 async def rag_initialization(worker_id: str, config_content: str = "") -> bool:
@@ -66,16 +66,30 @@ async def rag_initialization(worker_id: str, config_content: str = "") -> bool:
         print(f"RAG initialization failed for worker {worker_id}: {e}")
         return False
 
-# 全局会话，存储 worker_id -> 令牌信息
-# 结构: { worker_id: { "resource_id": str, "token": str } }
-RAG_SESSIONS: Dict[str, Dict] = {}
+# 全局会话结构升级
+# 结构: { worker_id: { "resource_id": str, "token": str, "base_url": str, "config_top_k": int } }
+RAG_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 @ToolRegistry.register_tool("rag_lifecycle")
-async def setup_rag_session(worker_id: str) -> str:
+async def setup_rag_session(worker_id: str, config: str = "{}") -> str:
     """
-    Initialize RAG session: Request an access token.
-    (Previously named setup_rag_engine). Supports server-side queuing with a long timeout.
+    申请 RAG 资源，建立直连通道。
+    可选地接受配置参数，用于初始化 top_k 等设置。
+    
+    Args:
+        worker_id: 工作进程ID
+        config: 初始化配置，JSON字符串格式，可包含top_k等参数，默认为"{}"
+        
+    Returns:
+        JSON字符串，包含状态信息和连接详情
     """
+    # 1. 解析配置
+    try:
+        config_dict = json.loads(config) if isinstance(config, str) else config
+    except Exception as e:
+        print(f"Failed to parse config for worker {worker_id}: {e}")
+        config_dict = {}
+
     req_timeout = 600.0  # 设置600秒的超时，允许在服务端排队
     target_resource_type = "rag"
 
@@ -102,18 +116,29 @@ async def setup_rag_session(worker_id: str) -> str:
 
     resource_id = data.get("id")
     token = data.get("token")
-    RAG_SESSIONS[worker_id] = {"resource_id": resource_id, "token": token}
+    base_url = data.get("base_url")  # 获取直连地址
+
+    if not base_url:
+        return json.dumps({"status": "error", "message": "Allocation failed: Missing base_url"})
+
+    # 保存直连信息和配置
+    RAG_SESSIONS[worker_id] = {
+        "resource_id": resource_id, 
+        "token": token,
+        "base_url": base_url,
+        "config_top_k": config_dict.get("top_k")  # 直接存储配置中的top_k
+    }
     
     return json.dumps({
         "status": "success",
-        "message": "Connected",
+        "message": f"Connected to RAG Service at {base_url}",
         "resource_id": resource_id
     })
 
 @ToolRegistry.register_tool("rag_query")
 async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] = None) -> str:
     """
-    Remotely query the knowledge base.
+    Remotely query the knowledge base (Direct Connect).
     """
     session = RAG_SESSIONS.get(worker_id)
     if not session:
@@ -138,23 +163,29 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] 
     else:
         effective_top_k = None           # 传 None，触发后端读取 deployment_config.json
 
+    target_url = session["base_url"] # 取出直连地址
+
     try:
         async with httpx.AsyncClient() as client:
+            # [关键修改] 直接 POST 到 RAG Service
             resp = await client.post(
-                f"{RESOURCE_API_URL}/query_rag",
+                f"{target_url}/query",
                 json={
-                    "resource_id": session["resource_id"],
-                    "worker_id": worker_id,
                     "query": query,
-                    "top_k": effective_top_k  # 发送 None 或具体数值
+                    "top_k": effective_top_k if effective_top_k else 5, # 确保传给嵌入式Server的是整数
+                    "token": auth_token
                 },
                 timeout=120
             )
+            
             if resp.status_code != 200:
-                return json.dumps({"status": "error", "message": f"Remote Error: {resp.text}"})
+                return json.dumps({"status": "error", "message": f"RAG Service Error: {resp.text}"})
+            
+            # 直接返回结果
             return json.dumps({"status": "success", "results": resp.json().get("results", "")})
+            
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        return json.dumps({"status": "error", "message": f"Direct connection failed: {str(e)}"})
 
 @ToolRegistry.register_tool("rag_lifecycle")
 async def release_rag_session(worker_id: str) -> str:
