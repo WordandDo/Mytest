@@ -9,7 +9,7 @@ cwd = os.getcwd()
 if os.path.join(cwd, "src") not in sys.path:
     sys.path.append(os.path.join(cwd, "src"))
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
@@ -173,7 +173,7 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] 
                 json={
                     "query": query,
                     "top_k": effective_top_k if effective_top_k else 5, # 确保传给嵌入式Server的是整数
-                    "token": auth_token
+                    "token": session.get("token", "")
                 },
                 timeout=120
             )

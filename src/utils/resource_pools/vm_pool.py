@@ -176,40 +176,5 @@ class VMPoolImpl(AbstractPoolManager):
         provider.stop_emulator(entry.path_to_vm)
 
     # [新增] 实现获取 VM 观测数据
-    def get_observation(self, resource_id: str) -> Optional[Dict[str, Any]]:
-        with self.pool_lock:
-            entry = self.pool.get(resource_id)
-            # 基础校验：资源存在、是VM类型、有IP、已被占用
-            if not entry or not isinstance(entry, VMResourceEntry) or not entry.ip:
-                return None
-            if entry.status != ResourceStatus.OCCUPIED:
-                return None
-            
-            # 提取连接信息，释放锁，避免阻塞其他 Worker
-            target_ip = entry.ip
-            target_port = entry.port
-            target_id = entry.resource_id
-
-        # 重试配置
-        max_retries = 5
-        retry_interval = 1.0
-        url = f"http://{target_ip}:{target_port}/observation"
-        
-        for attempt in range(max_retries):
-            try:
-                # 设置 2秒 超时，避免卡死
-                resp = requests.get(url, timeout=2)
-                if resp.status_code == 200:
-                    logger.info(f"Captured initial observation for {target_id}")
-                    return resp.json()
-                else:
-                    logger.warning(f"VM {target_id} returned status {resp.status_code} (attempt {attempt+1})")
-            except Exception as e:
-                # 连接失败通常是因为 VM 还在启动 Agent，值得重试
-                logger.debug(f"Attempt {attempt+1}/{max_retries} failed for {target_id}: {e}")
-            
-            if attempt < max_retries - 1:
-                time.sleep(retry_interval)
-        
-        logger.error(f"Failed to fetch observation from {target_id} after {max_retries} attempts.")
-        return None
+    # [已移除] get_observation 方法。现在由 MCP Gateway 服务直接与 VM 的 DesktopEnv Agent 通信以获取观测数据。
+    # 此更改简化了 VMPoolImpl，并将观测逻辑集中到 MCP 层。

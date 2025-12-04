@@ -7,6 +7,8 @@ import uuid
 import multiprocessing
 import uvicorn
 import traceback
+import signal
+import subprocess
 from typing import Dict, Any, Type, Optional
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
@@ -32,6 +34,30 @@ rag_index_instance: Optional[BaseRAGIndex] = None
 SERVER_CONFIG = {
     "default_top_k": 5  # 默认兜底
 }
+
+def kill_port_process(port: int):
+    """
+    强制杀死占用指定端口的进程
+    """
+    try:
+        # 查找占用端口的进程
+        result = subprocess.run(['lsof', '-i', f':{port}', '-t'], 
+                              capture_output=True, text=True)
+        if result.stdout:
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                        logger.info(f"Terminated process {pid} occupying port {port}")
+                    except ProcessLookupError:
+                        pass  # 进程已经退出
+                    except PermissionError:
+                        logger.warning(f"Permission denied terminating process {pid}")
+        else:
+            logger.info(f"No process found occupying port {port}")
+    except Exception as e:
+        logger.warning(f"Failed to kill process on port {port}: {e}")
 
 class QueryRequest(BaseModel):
     query: str
@@ -67,12 +93,15 @@ def start_rag_server(port: int, config: Dict[str, Any]):
     server_logger = logging.getLogger("RAG-Server")
     server_logger.info(f"Starting Embedded RAG Server on port {port}...")
 
-    # 2. [关键] 将配置注入全局变量
+    # 2. [新增] 清理占用目标端口的进程
+    kill_port_process(port)
+
+    # 3. [关键] 将配置注入全局变量
     if "default_top_k" in config:
         SERVER_CONFIG["default_top_k"] = int(config["default_top_k"])
         server_logger.info(f"Configured default_top_k = {SERVER_CONFIG['default_top_k']}")
 
-    # 3. 加载索引
+    # 4. 加载索引
     global rag_index_instance
     try:
         # 完整读取所有 deployment_config 参数
@@ -126,7 +155,7 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         server_logger.error(f"Failed to load index: {e}")
         traceback.print_exc()
     
-    # 4. 启动 uvicorn
+    # 5. 启动 uvicorn
     uvicorn.run(rag_server_app, host="0.0.0.0", port=port, log_level="warning")
 
 # =========================================================================
@@ -215,4 +244,13 @@ class RAGPoolImpl(AbstractPoolManager):
         if self.server_process and self.server_process.is_alive():
             logger.info("Stopping RAG Server process...")
             self.server_process.terminate()
-            self.server_process.join()
+            self.server_process.join(timeout=5)  # 等待最多5秒
+            
+            # 如果进程仍未退出，则强制杀死
+            if self.server_process.is_alive():
+                logger.warning("RAG Server process did not terminate gracefully, forcing kill...")
+                self.server_process.kill()
+                self.server_process.join()
+        
+        # 额外清理：确保端口被释放
+        kill_port_process(self.service_port)

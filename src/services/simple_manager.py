@@ -260,42 +260,8 @@ class GenericResourceManager:
         with self.state_cond:
             return {name: pool.get_stats() for name, pool in self.pools.items()}
     
-    # [新增] 聚合观测数据的方法
-    def get_initial_observations(self, worker_id: str) -> Dict[str, Any]:
-        """
-        遍历所有 Pool，收集该 Worker 名下所有资源的 Observation。
-        
-        Args:
-            worker_id: 工作节点ID
-            
-        Returns:
-            各资源类型的观测数据字典
-        """
-        results = {}
-        # self.pools 是根据 deployment_config.json 初始化生成的
-        for res_type, pool in self.pools.items():
-            found_entry = None
-            
-            # 1. 查找 Worker 拥有的资源 ID
-            # 使用资源池的锁确保线程安全
-            with pool.pool_lock:
-                for entry in pool.pool.values():
-                    if entry.allocated_to == worker_id:
-                        found_entry = entry
-                        break
-            
-            # 2. 获取观测数据 (如果没找到资源，默认为 None)
-            obs = None
-            if found_entry:
-                try:
-                    # 调用资源池的观测方法获取数据
-                    obs = pool.get_observation(found_entry.resource_id)
-                except Exception as e:
-                    logger.error(f"Error getting observation for {res_type}: {e}")
-            
-            results[res_type] = obs
-            
-        return results
+    # [删除] 之前的 get_initial_observations 和 query_rag 方法
+    # 现在由 MCP Gateway 直连各服务获取观测数据和执行查询
 
     # [删除] 之前的 query_rag 方法
     # def query_rag(self, resource_id: str, worker_id: str, query: str, top_k: Optional[int] = None) -> str:

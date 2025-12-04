@@ -228,9 +228,17 @@ async def _sync_resource_sessions(worker_id: str, allocated_resources: dict):
             from mcp_server.rag_server import RAG_SESSIONS
             resource_id = rag_info.get("id")
             token = rag_info.get("token")
-            if resource_id and token:
-                RAG_SESSIONS[worker_id] = {"resource_id": resource_id, "token": token}
-                logger.info(f"[{worker_id}] Synced RAG session")
+            # [关键修正] 必须同时提取 base_url
+            base_url = rag_info.get("base_url") 
+            
+            if resource_id and token: # 建议同时检查 base_url
+                RAG_SESSIONS[worker_id] = {
+                    "resource_id": resource_id, 
+                    "token": token,
+                    "base_url": base_url, # [新增] 存入直连地址
+                    "config_top_k": None  # 初始化配置项，防止后续查询出错
+                }
+                logger.info(f"[{worker_id}] Synced RAG session (Direct Mode: {base_url})")
         except ImportError:
             pass
 

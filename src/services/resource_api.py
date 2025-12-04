@@ -7,6 +7,8 @@ import os
 import json
 import re  # 用于环境变量替换的正则表达式处理
 import asyncio
+import signal
+import subprocess
 from dotenv import load_dotenv  # 用于加载.env文件中的环境变量
 from fastapi import FastAPI, HTTPException, BackgroundTasks  # FastAPI框架相关组件
 from pydantic import BaseModel  # 用于定义请求和响应的数据模型
@@ -38,6 +40,33 @@ app = FastAPI()
 # 全局资源管理器实例，初始为None，在应用启动时初始化
 # 使用Optional类型注解表明该变量可能为None
 manager: Optional[GenericResourceManager] = None
+
+def kill_port_process(port: int):
+    """
+    强制杀死占用指定端口的进程
+    
+    Args:
+        port: 要清理的端口号
+    """
+    try:
+        # 查找占用端口的进程
+        result = subprocess.run(['lsof', '-i', f':{port}', '-t'], 
+                              capture_output=True, text=True)
+        if result.stdout:
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                        logger.info(f"Terminated process {pid} occupying port {port}")
+                    except ProcessLookupError:
+                        pass  # 进程已经退出
+                    except PermissionError:
+                        logger.warning(f"Permission denied terminating process {pid}")
+        else:
+            logger.info(f"No process found occupying port {port}")
+    except Exception as e:
+        logger.warning(f"Failed to kill process on port {port}: {e}")
 
 # =========================================================================
 # [基础设施配置部分]
@@ -94,6 +123,9 @@ async def startup_event():
     """
     global manager
     try:
+        # 1. [新增] 清理可能占用目标端口的进程
+        kill_port_process(8000)
+        
         # 2. 加载统一配置
         config = load_deployment_config("deployment_config.json")
         
@@ -181,16 +213,6 @@ class ReleaseReq(BaseModel):
         worker_id: 工作节点ID
     """
     resource_id: str
-    worker_id: str
-
-# [新增] 请求模型
-class GetObsReq(BaseModel):
-    """
-    获取初始观测数据请求模型
-    
-    Attributes:
-        worker_id: 工作节点ID
-    """
     worker_id: str
 
 # =========================================================================
@@ -297,37 +319,7 @@ def get_status():
 # 为特定资源类型提供的专用操作接口
 # =========================================================================
 
-# [新增] 获取初始观测数据的 API
-@app.post("/get_initial_observations")
-def get_initial_observations_endpoint(req: GetObsReq):
-    """
-    获取初始观测数据接口
-    
-    用于获取工作节点下所有资源的初始观测数据，如虚拟机的屏幕截图等
-    
-    Args:
-        req: 获取观测数据请求
-        
-    Returns:
-        观测数据字典
-    """
-    # [修改] 检查 manager 是否已初始化
-    if manager is None:
-        logger.error("Resource Manager is not initialized.")
-        raise HTTPException(status_code=503, detail="Service not initialized")
-        
-    try:
-        # Log
-        logger.info(f"👁️ [GetObs] Worker={req.worker_id} requesting initial observations")
-        
-        # 调用 Manager 获取数据
-        results = manager.get_initial_observations(req.worker_id)
-        
-        return {"status": "success", "observations": results}
-    except Exception as e:
-        logger.error(f"❌ [GetObs] Error: {e}", exc_info=True)
-        # 失败时返回空字典，保证健壮性
-        return {"status": "error", "message": str(e), "observations": {}}
+# 删除了 /get_initial_observations 路由，因为现在由 MCP Gateway 直连获取观测数据
 
 # 应用入口点
 if __name__ == "__main__":
