@@ -420,12 +420,12 @@ class HttpMCPEnv:
 
     def _load_gateway_config(self, config_path: str) -> Dict[str, Any]:
         if not os.path.exists(config_path):
-            return {"modules": []}
+            return {"modules": [{"resource_type": "vm"}]}
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
-            return {"modules": []}
+            return {"modules": [{"resource_type": "vm"}]}
 
     def _initialize_tools(self):
         """从 MCP Server 获取工具列表"""
@@ -553,60 +553,24 @@ class HttpMCPEnv:
             return {"status": "error", "message": str(e)}
 
     def get_inital_obs(self) -> Dict[str, Any]:
-        """调用 MCP 获取初始观察，并应用黑名单过滤"""
+        """调用 MCP 获取初始观察"""
         logger.info(f"[{self.worker_id}] Fetching initial observations...")
-        
-        combined_obs = {}
-        self.initial_observation = None # 重置主观察
-
-        # 1. 从 self.config (已合并任务 metadata) 获取黑名单设置
-        # resource_blacklist: 资源类型黑名单列表，例如 ['rag', 'vm_pyautogui']
-        resource_blacklist = self.config.get("observation_blacklist", [])
-        # content_blacklist: 资源内容细粒度黑名单，例如 {'vm_computer_13': ['accessibility_tree']}
-        content_blacklist = self.config.get("observation_content_blacklist", {})
-
+        combined_obs = {"vm": None, "rag": None}
         try:
-            # 调用系统工具获取所有资源的初始观察
             res = self._call_tool_sync("get_batch_initial_observations", {"worker_id": self.worker_id})
-            data = self._parse_mcp_response(res) 
+            data = self._parse_mcp_response(res)
 
             if isinstance(data, dict) and "error" not in data:
-                # 2. 遍历并应用黑名单过滤
-                for resource_type, obs_content in data.items():
-                    # A. 资源类型黑名单过滤
-                    if resource_type in resource_blacklist:
-                        logger.info(f"[{self.worker_id}] Blacklisted resource observation skipped: {resource_type}")
-                        continue
-                        
-                    # B. 观察内容细粒度过滤
-                    filtered_obs_content = obs_content
-                    if resource_type in content_blacklist and isinstance(obs_content, dict):
-                        # 对资源内容进行拷贝，避免修改原始数据
-                        filtered_obs_content = obs_content.copy()
-                        keys_to_remove = content_blacklist[resource_type]
-                        
-                        for key in keys_to_remove:
-                            if key in filtered_obs_content:
-                                del filtered_obs_content[key]
-                                logger.info(f"[{self.worker_id}] Blacklisted observation content removed: {resource_type}.{key}")
-                    
-                    combined_obs[resource_type] = filtered_obs_content
-
-                    # 3. 动态确定主要观察 (用于 LLM 注入)
-                    # 优先将视觉环境（vm/desktop相关的）且非空的观察设为主观察
-                    # 注意：这里使用启发式检查，同时过滤掉内容为空或只剩少量键的观察
-                    if self.initial_observation is None and ("vm" in resource_type.lower() or "desktop" in resource_type.lower()):
-                         # 确保过滤后仍包含用于主观察的必要内容 (如 screenshot)
-                         if filtered_obs_content and any(key in filtered_obs_content for key in ["screenshot", "accessibility_tree", "text"]):
-                            self.initial_observation = filtered_obs_content
-                         
+                if "vm" in data and data["vm"]:
+                    combined_obs["vm"] = data["vm"]
+                    self.initial_observation = data["vm"]
+                if "rag" in data:
+                    combined_obs["rag"] = data["rag"]
             else:
                 logger.warning(f"[{self.worker_id}] Failed to fetch obs: {data.get('error')}")
-                
             return combined_obs
         except Exception as e:
             logger.error(f"[{self.worker_id}] Obs fetch error: {e}")
-            # 即使失败，也要返回已收集的部分观察结果
             return combined_obs
 
     def allocate_resource(self, worker_id: str, resource_init_data: Optional[Dict[str, Any]] = None) -> bool:
