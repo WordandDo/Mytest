@@ -53,7 +53,7 @@
         "rag_index_path": "/home/a1/sdb/wikidata4rag/rag_index_20230401-10samples",
         "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
         "use_faiss": true,
-        "embedding_device": "cuda",
+        "embedding_device": "cpu",
         "use_gpu_index": true,
         "default_top_k": 5
       }
