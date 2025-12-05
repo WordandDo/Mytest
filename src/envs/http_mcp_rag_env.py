@@ -48,7 +48,8 @@ class HttpMCPRagEnv(HttpMCPEnv):
             **kwargs
         )
 
-        logger.info(f"HttpMCPRagEnv initialized for {self.worker_id}")
+        # 减少日志：移除初始化日志
+        # logger.info(f"HttpMCPRagEnv initialized for {self.worker_id}")
 
     @property
     def mode(self) -> str:
@@ -98,9 +99,10 @@ class HttpMCPRagEnv(HttpMCPEnv):
             ]
             filtered_count = len(config["modules"])
 
+            # 减少日志：仅在有过滤时输出
             if filtered_count < original_count:
                 logger.info(
-                    f"[{self.worker_id}] Filtered gateway config: "
+                    f"[{self.worker_id}] Gateway config filtered: "
                     f"{filtered_count}/{original_count} modules (RAG only)"
                 )
 

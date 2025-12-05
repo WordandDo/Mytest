@@ -82,8 +82,7 @@ class HttpMCPEnv:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
-        logger.info(f"HttpMCPEnv initialized for {self.worker_id} -> {self.server_url}")
-        logger.info(f"Active Allocatable Resources: {self.active_resources}")
+        logger.info(f"HttpMCPEnv initialized: {self.worker_id} -> {self.server_url}, resources: {self.active_resources}")
         
         # 初始化远程工具列表
         self._initialize_tools()
@@ -193,12 +192,12 @@ class HttpMCPEnv:
         # 注入初始观察
         initial_obs = getattr(self, "initial_observation", None)
         
-        # === [LOG 3: 检查主观察状态] ===
-        if initial_obs:
-            logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] Initial Observation Status: Present for injection.")
-        else:
-            logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] Initial Observation Status: Not present for injection.")
-            
+        # === 减少日志：移除初始观察状态检查 ===
+        # if initial_obs:
+        #     logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] Initial Observation Status: Present for injection.")
+        # else:
+        #     logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] Initial Observation Status: Not present for injection.")
+
         if initial_obs and isinstance(initial_obs, dict):
             if initial_obs.get("screenshot"):
                 user_content.append({
@@ -221,10 +220,9 @@ class HttpMCPEnv:
 
         messages.append({"role": "user", "content": user_content})
 
-        # === [LOG 4: 检查注入后的用户消息 (已截断)] ===
-        # 使用 self._truncate_data 处理 messages[1]
-        safe_msg = self._truncate_data(messages[1], max_len=200)
-        logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] First User Message Content (Check Injection): {json.dumps(safe_msg, indent=2, ensure_ascii=False)}")
+        # === 减少日志：移除用户消息内容检查 ===
+        # safe_msg = self._truncate_data(messages[1], max_len=200)
+        # logger.info(f"[{self.worker_id}] [LLM_INJECT_LOG] First User Message Content (Check Injection): {json.dumps(safe_msg, indent=2, ensure_ascii=False)}")
 
         client = self._get_openai_client()
         turn_count = 0
@@ -240,7 +238,8 @@ class HttpMCPEnv:
             retry = 0
             while retry < max_retries:
                 try:
-                    logger.info(f"Turn {turn_count}: Calling LLM...")
+                    # 减少日志：仅在需要时输出
+                    # logger.info(f"Turn {turn_count}: Calling LLM...")
                     response = client.chat.completions.create(
                         model=model_name,
                         messages=messages,
@@ -261,7 +260,8 @@ class HttpMCPEnv:
                             tool_name = tool_call.function.name
                             tool_args = json.loads(tool_call.function.arguments)
 
-                            logger.info(f"Round {turn_count}: 🔧 Using tool: {tool_name}")
+                            # 减少日志：仅输出工具名称
+                            logger.info(f"🔧 {tool_name}")
 
                             # 代理到 MCP 执行
                             tool_output = self.execute_tool(tool_name, tool_args)
@@ -298,10 +298,11 @@ class HttpMCPEnv:
                                     "role": "user",
                                     "content": user_content_blocks
                                 })
-                        
+
                     else:
-                        logger.info(f"Turn {turn_count}: final answer produced")
-                        return messages 
+                        # 减少日志：最终答案产生时不再输出
+                        # logger.info(f"Turn {turn_count}: final answer produced")
+                        return messages
                     
                     break # 成功则跳出重试循环
 
@@ -367,7 +368,8 @@ class HttpMCPEnv:
             timeout = float(self.config.get("openai_timeout", os.environ.get("OPENAI_TIMEOUT", "30")))
             max_retries = int(self.config.get("openai_max_retries", os.environ.get("OPENAI_MAX_RETRIES", "2")))
 
-            logger.info(f"[{self.worker_id}] Initializing OpenAI client...")
+            # 减少日志：移除OpenAI client初始化日志
+            # logger.info(f"[{self.worker_id}] Initializing OpenAI client...")
 
             openai.api_key = api_key
             if base_url:
@@ -445,7 +447,8 @@ class HttpMCPEnv:
             return
 
         try:
-            logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
+            # 减少日志：移除工具获取日志
+            # logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
             mcp_tools = self._list_tools_sync()
 
             # 1. 显式黑名单（保留以防万一）
@@ -472,11 +475,12 @@ class HttpMCPEnv:
 
             # 生成 Schema 和描述字符串给 LLM
             self.tool_schemas = [self._convert_mcp_tool_to_openai(t) for t in valid_tools]
-            
+
             descriptions = [f"- {t.name}: {t.description or 'No description.'}" for t in valid_tools]
             self.tool_descriptions = "\n".join(descriptions)
 
-            logger.info(f"[{self.worker_id}] Initialized {len(valid_tools)} tools.")
+            # 减少日志：仅输出工具数量
+            logger.info(f"[{self.worker_id}] {len(valid_tools)} tools initialized")
 
         except Exception as e:
             logger.error(f"Failed to initialize tools: {e}")
@@ -520,8 +524,9 @@ class HttpMCPEnv:
         """同步调用 MCP 工具"""
         if isinstance(arguments, dict) and "worker_id" not in arguments:
             arguments["worker_id"] = self.worker_id
-            
-        logger.info(f"[{self.worker_id}] ⏳ Calling tool: {name}")
+
+        # 减少日志：移除工具调用开始日志
+        # logger.info(f"[{self.worker_id}] ⏳ Calling tool: {name}")
         res = self._run_sync(self.mcp_client.call_tool(name, arguments))
         
         # 生命周期工具直接返回原始结果，不进行标准化包装
@@ -566,8 +571,9 @@ class HttpMCPEnv:
 
     def get_inital_obs(self) -> Dict[str, Any]:
         """调用 MCP 获取初始观察，并应用黑名单过滤"""
-        logger.info(f"[{self.worker_id}] Fetching initial observations...")
-        
+        # 减少日志：移除初始观察获取日志
+        # logger.info(f"[{self.worker_id}] Fetching initial observations...")
+
         combined_obs = {}
         self.initial_observation = None # 重置主观察
 
@@ -580,19 +586,19 @@ class HttpMCPEnv:
         try:
             # 调用系统工具获取所有资源的初始观察
             res = self._call_tool_sync("get_batch_initial_observations", {"worker_id": self.worker_id})
-            data = self._parse_mcp_response(res) 
-            
-            # === [LOG 1: 原始观察数据 (已截断)] ===
-            # 使用 self._truncate_data 处理 data
-            safe_data = self._truncate_data(data, max_len=100)
-            logger.info(f"[{self.worker_id}] [OBS_LOG] Raw observation data from MCP (Truncated): {json.dumps(safe_data, indent=2, ensure_ascii=False)}")
-            
+            data = self._parse_mcp_response(res)
+
+            # === 减少日志：移除原始观察数据和过滤后观察数据的详细日志 ===
+            # safe_data = self._truncate_data(data, max_len=100)
+            # logger.info(f"[{self.worker_id}] [OBS_LOG] Raw observation data from MCP (Truncated): {json.dumps(safe_data, indent=2, ensure_ascii=False)}")
+
             if isinstance(data, dict) and "error" not in data:
                 # 2. 遍历并应用黑名单过滤
                 for resource_type, obs_content in data.items():
                     # A. 资源类型黑名单过滤
                     if resource_type in resource_blacklist:
-                        logger.info(f"[{self.worker_id}] Blacklisted resource observation skipped: {resource_type}")
+                        # 减少日志：移除黑名单跳过日志
+                        # logger.info(f"[{self.worker_id}] Blacklisted resource observation skipped: {resource_type}")
                         continue
                         
                     # B. 观察内容细粒度过滤
@@ -605,8 +611,9 @@ class HttpMCPEnv:
                         for key in keys_to_remove:
                             if key in filtered_obs_content:
                                 del filtered_obs_content[key]
-                                logger.info(f"[{self.worker_id}] Blacklisted observation content removed: {resource_type}.{key}")
-                    
+                                # 减少日志：移除黑名单内容移除日志
+                                # logger.info(f"[{self.worker_id}] Blacklisted observation content removed: {resource_type}.{key}")
+
                     combined_obs[resource_type] = filtered_obs_content
 
                     # 3. 动态确定主要观察 (用于 LLM 注入)
@@ -619,17 +626,14 @@ class HttpMCPEnv:
                          
             else:
                 logger.warning(f"[{self.worker_id}] Failed to fetch obs: {data.get('error')}")
-                
-            # === [LOG 2: 过滤后的最终观察 (已截断)] ===
-            # 使用 self._truncate_data 处理 combined_obs
-            safe_obs = self._truncate_data(combined_obs, max_len=100)
-            logger.info(f"[{self.worker_id}] [OBS_LOG] Final combined observations (Filtered & Truncated): {json.dumps(safe_obs, indent=2, ensure_ascii=False)}")
-            
-            if self.initial_observation:
-                # 仅打印主观察的键，避免日志中出现巨大的 base64 截图字符串
-                logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation SET. Keys: {list(self.initial_observation.keys())}")
-            else:
-                logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation is None.")
+
+            # === 减少日志：移除最终观察和主观察的详细日志 ===
+            # safe_obs = self._truncate_data(combined_obs, max_len=100)
+            # logger.info(f"[{self.worker_id}] [OBS_LOG] Final combined observations (Filtered & Truncated): {json.dumps(safe_obs, indent=2, ensure_ascii=False)}")
+            # if self.initial_observation:
+            #     logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation SET. Keys: {list(self.initial_observation.keys())}")
+            # else:
+            #     logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation is None.")
 
             return combined_obs
         except Exception as e:
@@ -642,7 +646,8 @@ class HttpMCPEnv:
         统一的资源分配入口函数 (MCP 模式)
         """
         resource_init_data = resource_init_data or {}
-        logger.info(f"Worker [{worker_id}] allocating resources...")
+        # 减少日志：简化资源分配开始日志
+        logger.info(f"[{worker_id}] Allocating resources...")
         self.initial_observation = None
 
         try:
@@ -653,7 +658,8 @@ class HttpMCPEnv:
                  return True
 
             # 1. 申请资源
-            logger.info(f"[{self.worker_id}] Allocating batch resources: {self.active_resources}...")
+            # 减少日志：移除批量资源分配详细日志
+            # logger.info(f"[{self.worker_id}] Allocating batch resources: {self.active_resources}...")
             res = self._call_tool_sync("allocate_batch_resources", {
                 "resource_types": self.active_resources,
                 "timeout": 600
@@ -665,18 +671,19 @@ class HttpMCPEnv:
 
             self.allocated_resources = data
 
-            # 2. 初始化资源
-            if resource_init_data:
-                logger.info(f"[{self.worker_id}] Setting up resources...")
-                setup_res = self._call_tool_sync("setup_batch_resources", {
-                    "resource_init_configs": resource_init_data,
-                    "allocated_resources": data
-                })
-                setup_result = self._parse_mcp_response(setup_res)
-                if setup_result.get("status") not in ["success", "partial_error"]:
-                    logger.error(f"Setup failed: {setup_result}")
-                    self.release_resource(self.worker_id)
-                    return False
+            # 2. 初始化资源（总是调用以确保会话同步）
+            # 即使没有 resource_init_data，也需要调用 setup_batch_resources 来同步会话
+            # 减少日志：移除资源设置日志
+            # logger.info(f"[{self.worker_id}] Setting up resources...")
+            setup_res = self._call_tool_sync("setup_batch_resources", {
+                "resource_init_configs": resource_init_data,  # 可以为空 dict，不影响会话同步
+                "allocated_resources": data  # 关键：传递已分配的资源信息用于 _sync_resource_sessions
+            })
+            setup_result = self._parse_mcp_response(setup_res)
+            if setup_result.get("status") not in ["success", "partial_error"]:
+                logger.error(f"Setup failed: {setup_result}")
+                self.release_resource(self.worker_id)
+                return False
 
             # 3. 获取初始观察
             self.get_inital_obs()
@@ -691,7 +698,8 @@ class HttpMCPEnv:
         统一释放所有已分配的资源 (MCP 模式)
         调用 system_resource 组的 release_batch_resources 工具
         """
-        logger.info(f"Worker [{worker_id}] releasing resources via MCP...")
+        # 减少日志：简化资源释放开始日志
+        logger.info(f"[{worker_id}] Releasing resources...")
         
         # 收集所有已分配资源的 ID
         resource_ids = []
@@ -700,7 +708,8 @@ class HttpMCPEnv:
                 resource_ids.append(res_data["id"])
         
         if not resource_ids:
-            logger.info(f"Worker [{worker_id}] has no resources to release.")
+            # 减少日志：移除无资源释放日志
+            # logger.info(f"Worker [{worker_id}] has no resources to release.")
             return
 
         try:
@@ -709,11 +718,12 @@ class HttpMCPEnv:
                 "worker_id": worker_id,
                 "resource_ids": resource_ids
             })
-            
+
             # 清空本地记录
             self.allocated_resources.clear()
-            logger.info(f"Worker [{worker_id}] release completed.")
-            
+            # 减少日志：移除释放完成日志
+            # logger.info(f"Worker [{worker_id}] release completed.")
+
         except Exception as e:
             logger.error(f"Failed to release resources via MCP: {e}")
 
@@ -753,8 +763,9 @@ class HttpMCPEnv:
         """
         if not task_config:
             return
-        
-        logger.info(f"[{self.worker_id}] Applying task specific config: {task_config}")
+
+        # 减少日志：移除任务配置应用日志
+        # logger.info(f"[{self.worker_id}] Applying task specific config: {task_config}")
         # 更新实例配置，以便后续 allocate/setup 阶段可以使用新参数
         self.config.update(task_config)
 
@@ -772,7 +783,8 @@ class HttpMCPEnv:
         框架在 Worker 退出或收到停止信号时会调用此方法。
         """
         wid = worker_id or self.worker_id
-        logger.info(f"[{wid}] Cleaning up environment resources...")
+        # 减少日志：移除清理开始日志
+        # logger.info(f"[{wid}] Cleaning up environment resources...")
         try:
             # 1. 释放远端资源
             self.release_resource(wid)

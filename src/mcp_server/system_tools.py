@@ -156,13 +156,15 @@ async def setup_batch_resources(worker_id: str, resource_init_configs: dict, all
     results = {}
     overall_success = True
 
-    if not resource_init_configs:
-        return json.dumps({"status": "success", "details": "No config provided"})
-
-    # 在初始化前，先同步资源状态到各模块的全局变量
+    # [关键修复] 即使没有 resource_init_configs，也要同步资源会话
+    # 这确保了 RAG_SESSIONS 等全局会话字典能够正确更新
     if allocated_resources:
         logger.info(f"[{worker_id}] Syncing allocated resources to module sessions...")
         await _sync_resource_sessions(worker_id, allocated_resources)
+
+    # 如果没有初始化配置，同步后直接返回成功
+    if not resource_init_configs:
+        return json.dumps({"status": "success", "details": "No config provided, session sync completed"})
 
     for res_type, config_wrapper in resource_init_configs.items():
         # 兼容两种格式: 直接传 content 或者 {"content": ...}

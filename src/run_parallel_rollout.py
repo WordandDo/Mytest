@@ -77,9 +77,7 @@ def run_parallel_rollout(
 
     logger.info("=" * 60)
     logger.info("Starting Parallel Rollout Framework (MCP Native)")
-    logger.info(f"  Num Rollouts: {config.num_rollouts}")
-    logger.info(f"  Env Mode: {config.env_mode}")
-    logger.info(f"  Benchmark Items: {len(benchmark.get_items())}")
+    logger.info(f"Rollouts: {config.num_rollouts} | Env: {config.env_mode} | Items: {len(benchmark.get_items())}")
     logger.info("=" * 60)
     
     # 1. 获取环境类
@@ -173,22 +171,33 @@ def run_parallel_rollout(
             metric=evaluation_metric
         )
         
+        # 计算评分统计信息
+        total_items = len(benchmark_results)
+        successful_items = len([r for r in benchmark_results if r.score > 0])
+        failed_items = total_items - successful_items
+        avg_score = sum(r.score for r in benchmark_results) / total_items if total_items > 0 else 0.0
+
         logger.info("=" * 60)
         logger.info("Benchmark Evaluation Results")
         logger.info(f"  Metric: {evaluation_metric}")
-        logger.info(f"  Total Items: {len(benchmark_results)}")
-        if benchmark_results:
-            avg_score = sum(r.score for r in benchmark_results) / len(benchmark_results)
-            logger.info(f"  Average Score: {avg_score:.4f}")
-        
-        # [新增] 4. 在日志中输出总耗时
-        logger.info("-" * 30)
-        logger.info(f"  Total Duration: {duration_str} ({total_duration_seconds:.2f}s)")
+        logger.info(f"  Total Items: {total_items}")
+        logger.info(f"  Successful: {successful_items}")
+        logger.info(f"  Failed: {failed_items}")
+        logger.info(f"  Average Score: {avg_score:.4f}")
+        logger.info("=" * 60)
+
+        # [新增] 4. 在日志中输出总耗时（更显眼的格式）
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("⏱️  TOTAL EXECUTION TIME")
+        logger.info(f"  Duration: {duration_str} ({total_duration_seconds:.2f}s)")
+        logger.info(f"  Start: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(benchmark_start_time))}")
+        logger.info(f"  End: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(benchmark_end_time))}")
         logger.info("=" * 60)
         
         # 保存结果
         os.makedirs(config.output_dir, exist_ok=True)
-        
+
         # 保存 Trajectory
         trajectory_file = os.path.join(config.output_dir, "trajectory.jsonl")
         logger.info(f"Saving execution trajectories to {trajectory_file}...")
@@ -196,12 +205,70 @@ def run_parallel_rollout(
             for res in results:
                 json.dump(res, f, ensure_ascii=False)
                 f.write("\n")
-        
+
+        # [新增] 保存详细的评分结果
+        scores_file = os.path.join(config.output_dir, "evaluation_scores.json")
+        logger.info(f"Saving evaluation scores to {scores_file}...")
+
+        # 构建详细的评分数据
+        detailed_scores = []
+        for eval_result in benchmark_results:
+            score_record = {
+                "task_id": eval_result.task_id,
+                "score": eval_result.score,
+                "predicted_answer": eval_result.predicted,
+                "ground_truth": eval_result.expected,
+                "is_correct": eval_result.score > 0
+            }
+            detailed_scores.append(score_record)
+
+        # 保存详细评分
+        with open(scores_file, "w", encoding="utf-8") as f:
+            json.dump(detailed_scores, f, indent=2, ensure_ascii=False)
+
+        # [新增] 保存汇总统计结果
+        summary_file = os.path.join(config.output_dir, "evaluation_summary.json")
+        logger.info(f"Saving evaluation summary to {summary_file}...")
+
+        summary_data = {
+            "timestamp": datetime.now().isoformat(),
+            "evaluation_metric": evaluation_metric,
+            "total_items": total_items,
+            "successful_items": successful_items,
+            "failed_items": failed_items,
+            "average_score": avg_score,
+            "success_rate": successful_items / total_items if total_items > 0 else 0.0,
+            "execution_time": {
+                "total_seconds": total_duration_seconds,
+                "formatted": duration_str,
+                "start_time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(benchmark_start_time)),
+                "end_time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(benchmark_end_time))
+            },
+            "configuration": {
+                "num_rollouts": config.num_rollouts,
+                "env_mode": config.env_mode,
+                "model_name": agent_config_dict.get("model_name", "N/A"),
+                "max_turns": agent_config_dict.get("max_turns", "N/A")
+            }
+        }
+
+        with open(summary_file, "w", encoding="utf-8") as f:
+            json.dump(summary_data, f, indent=2, ensure_ascii=False)
+
         # 保存 Worker 状态映射（调试用）
         mapping_file = os.path.join(config.output_dir, "worker_instance_map.json")
         with open(mapping_file, "w", encoding="utf-8") as f:
             worker_instance_snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in worker_instance_map.items()}
             json.dump(worker_instance_snapshot, f, indent=2, ensure_ascii=False)
+
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("📊 Results saved:")
+        logger.info(f"  - Trajectories: {trajectory_file}")
+        logger.info(f"  - Detailed scores: {scores_file}")
+        logger.info(f"  - Summary: {summary_file}")
+        logger.info(f"  - Worker mapping: {mapping_file}")
+        logger.info("=" * 60)
 
         return {
             "worker_results": results,
