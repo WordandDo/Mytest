@@ -1,0 +1,107 @@
+{
+  "_comment": "此文件展示了 RAG 配置的各种示例，包括新的高级特性",
+
+  "example_1_standard_faiss": {
+    "description": "标准 Faiss 索引配置",
+    "rag": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 3,
+        "rag_kb_path": "/data/knowledge.jsonl",
+        "rag_index_path": "/data/index_standard",
+        "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "embedding_device": "cuda:0",
+
+        "use_faiss": true,
+        "use_gpu_index": true,
+        "default_top_k": 10
+      }
+    }
+  },
+
+  "example_2_compact_index_multi_gpu": {
+    "description": "启用高性能压缩索引 (IVF-PQ) 并使用多卡编码",
+    "rag": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 3,
+        "rag_kb_path": "/data/knowledge.jsonl",
+        "rag_index_path": "/data/index_compact",
+        "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "embedding_device": "cuda:0",
+
+        "use_faiss": true,
+        "use_compact": true,
+        "use_gpu_index": true,
+        "gpu_parallel_degree": 2,
+        "embedding_devices": "cuda:0,cuda:1",
+        "target_bytes_per_vector": 32,
+        "default_top_k": 10
+      }
+    }
+  },
+
+  "example_3_gainrag_mode": {
+    "description": "启用 GainRAG 模式（需要预先构建的 GainRAG 索引）",
+    "rag": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 3,
+        "rag_index_path": "/data/gainrag_index_folder",
+        "rag_model_name": "facebook/contriever",
+        "passages_path": "/data/passages.jsonl",
+
+        "use_gainrag": true,
+        "use_gpu_index": true,
+        "gpu_id": 0,
+        "default_top_k": 10
+      }
+    }
+  },
+
+  "example_4_local_numpy_index": {
+    "description": "基础本地 Numpy 索引（无 Faiss，适合小规模数据）",
+    "rag": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 2,
+        "rag_kb_path": "/data/small_knowledge.jsonl",
+        "rag_index_path": "/data/index_numpy",
+        "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "embedding_device": "cpu",
+
+        "use_faiss": false,
+        "default_top_k": 5
+      }
+    }
+  },
+
+  "parameter_reference": {
+    "description": "所有可用参数的完整说明",
+    "parameters": {
+      "num_rag_workers": "RAG worker 进程数量",
+      "rag_kb_path": "知识库文件路径（构建新索引时必需）",
+      "rag_index_path": "索引保存/加载路径",
+      "rag_model_name": "Embedding 模型名称",
+      "embedding_device": "主要的 embedding 设备（如 'cuda:0' 或 'cpu'）",
+
+      "use_faiss": "是否使用 Faiss 加速（布尔值）",
+      "use_compact": "是否使用压缩索引 (IVFPQ)（布尔值）",
+      "use_gainrag": "是否使用 GainRAG 模式（布尔值）",
+
+      "use_gpu_index": "是否将 Faiss 索引放在 GPU 上（布尔值）",
+      "gpu_parallel_degree": "Faiss 索引跨多少张 GPU 卡（整数）",
+      "embedding_devices": "编码时使用的设备列表（字符串，如 'cuda:0,cuda:1' 或列表）",
+
+      "target_bytes_per_vector": "压缩索引的目标字节数/向量（整数，用于 compact 模式）",
+      "passages_path": "Passages 文件路径（GainRAG 必需）",
+      "gpu_id": "GPU 设备 ID（整数，用于 GainRAG）",
+
+      "default_top_k": "默认返回的 top-k 结果数量（整数）"
+    }
+  }
+}

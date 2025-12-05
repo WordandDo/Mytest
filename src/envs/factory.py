@@ -197,5 +197,11 @@ def _auto_register_builtin_environments():
     except ImportError:
         pass
 
+    try:
+        from .http_mcp_rag_env import HttpMCPRagEnv
+        register_environment("http_mcp_rag", HttpMCPRagEnv)
+    except ImportError:
+        pass
+
 # Auto-register on module import
 _auto_register_builtin_environments()

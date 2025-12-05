@@ -25,7 +25,7 @@
       }
     },
     "vm_pyautogui": {
-      "enabled": true,
+      "enabled": false,
       "implementation_class": "utils.resource_pools.vm_pool.VMPoolImpl",
       "config": {
         "num_vms": 2,
@@ -48,14 +48,15 @@
       "enabled": true,
       "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
       "config": {
-        "num_rag_workers": 3,
-        "rag_kb_path": "",
-        "rag_index_path": "/home/a1/sdb/wikidata4rag/rag_index_20230401-10samples",
-        "rag_model_name": "sentence-transformers/all-MiniLM-L6-v2",
-        "use_faiss": true,
-        "embedding_device": "cpu",
+        "num_rag_workers": 10,
+        "rag_index_path": "/home/a1/sdb/wikidata4rag/wikipedia_embeddings",
+        "rag_model_name": "facebook/contriever",
+        "passages_path": "/home/a1/sdb/wikidata4rag/psgs_w100.tsv",
+
+        "use_gainrag": true,
         "use_gpu_index": true,
-        "default_top_k": 5
+        "gpu_id": 0,
+        "default_top_k": 10
       }
     },
     "web_search": {

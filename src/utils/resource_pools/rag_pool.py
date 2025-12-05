@@ -20,7 +20,8 @@ if os.path.join(cwd, "src") not in sys.path:
 
 from utils.resource_pools.base import AbstractPoolManager, ResourceEntry, ResourceStatus
 # 直接导入底层索引实现，不再依赖 RAGEnvironment
-from utils.rag_index import get_rag_index_class, BaseRAGIndex
+# 使用新的 rag_index_new.py 模块
+from utils.rag_index_new import get_rag_index_class, BaseRAGIndex
 
 logger = logging.getLogger(__name__)
 
@@ -86,17 +87,17 @@ async def health_check():
 def start_rag_server(port: int, config: Dict[str, Any]):
     """
     [子进程入口] 启动 RAG 服务
-    config 参数就是 deployment_config.json 中的 "config" 部分
+    适配了新的 rag_index_new.py，支持 GainRAG、Compact 索引和多 GPU 配置
     """
     # 1. 配置日志
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - [RAG-Server] - %(levelname)s - %(message)s')
     server_logger = logging.getLogger("RAG-Server")
     server_logger.info(f"Starting Embedded RAG Server on port {port}...")
 
-    # 2. [新增] 清理占用目标端口的进程
+    # 2. 清理占用目标端口的进程
     kill_port_process(port)
 
-    # 3. [关键] 将配置注入全局变量
+    # 3. 注入全局配置
     if "default_top_k" in config:
         SERVER_CONFIG["default_top_k"] = int(config["default_top_k"])
         server_logger.info(f"Configured default_top_k = {SERVER_CONFIG['default_top_k']}")
@@ -104,57 +105,137 @@ def start_rag_server(port: int, config: Dict[str, Any]):
     # 4. 加载索引
     global rag_index_instance
     try:
-        # 完整读取所有 deployment_config 参数
+        # ==========================================
+        # [适配点 1] 提取基础路径配置
+        # ==========================================
         kb_path = config.get("rag_kb_path", "")
         index_path = config.get("rag_index_path", "")
         model_name = config.get("rag_model_name", "sentence-transformers/all-MiniLM-L6-v2")
-        use_faiss = config.get("use_faiss", False)
         device = config.get("embedding_device", "cpu")
-        
-        # [适配] 处理 use_gpu_index (兼容字符串 "true"/"false" 和布尔值)
-        use_gpu_index_raw = config.get("use_gpu_index", False)
-        if isinstance(use_gpu_index_raw, str):
-            use_gpu_index = use_gpu_index_raw.lower() in ('true', '1', 'yes')
-        else:
-            use_gpu_index = bool(use_gpu_index_raw)
 
-        # 实例化
-        IndexClass = get_rag_index_class(use_faiss=use_faiss)
-        
-        # 准备加载参数 (专门处理 RAGIndexLocal_faiss 的特殊参数)
-        load_kwargs = {
-            "index_path": index_path,
+        # ==========================================
+        # [适配点 2] 提取类型开关 (Boolean)
+        # ==========================================
+        def parse_bool(key, default=False):
+            val = config.get(key, default)
+            if isinstance(val, str):
+                return val.lower() in ('true', '1', 'yes')
+            return bool(val)
+
+        use_faiss = parse_bool("use_faiss", False)
+        use_gpu_index = parse_bool("use_gpu_index", False)
+        # [新增] 紧凑型索引开关
+        use_compact = parse_bool("use_compact", False)
+        # [新增] GainRAG 开关
+        use_gainrag = parse_bool("use_gainrag", False)
+
+        # ==========================================
+        # [适配点 3] 提取高级参数
+        # ==========================================
+        # [新增] GPU 并行度
+        gpu_parallel_degree = config.get("gpu_parallel_degree")
+        if gpu_parallel_degree:
+            gpu_parallel_degree = int(gpu_parallel_degree)
+
+        # [新增] 多卡 Embedding 设备列表 (解析 "cuda:0,cuda:1" 字符串)
+        embedding_devices = config.get("embedding_devices")
+        if isinstance(embedding_devices, str) and embedding_devices.strip():
+            embedding_devices = [d.strip() for d in embedding_devices.split(",")]
+        elif not isinstance(embedding_devices, list):
+            embedding_devices = None
+
+        # [新增] Compact 索引特定参数
+        target_bytes = config.get("target_bytes_per_vector")
+        target_bytes = int(target_bytes) if target_bytes else None
+
+        # [新增] GainRAG 特定参数
+        passages_path = config.get("passages_path") # GainRAG 必须提供
+        gpu_id = int(config.get("gpu_id", 0))
+
+        # ==========================================
+        # [适配点 4] 调用新的工厂函数
+        # ==========================================
+        # 工厂函数现在接收更多参数来决定返回哪个类
+        IndexClass = get_rag_index_class(
+            use_faiss=use_faiss,
+            use_compact=use_compact,
+            use_gainrag=use_gainrag
+        )
+        server_logger.info(f"Selected Index Class: {IndexClass.__name__}")
+
+        # ==========================================
+        # [适配点 5] 构建通用参数字典
+        # ==========================================
+        # 这些参数在 load_index 和 __init__ 中大多是通用的
+        common_kwargs = {
             "model_name": model_name,
-            "device": device
+            "device": device,
+            "embedding_devices": embedding_devices, # 传递多卡列表
         }
-        # 如果是 Faiss 索引，注入 gpu 配置
-        if "faiss" in IndexClass.__name__.lower():
-            load_kwargs["use_gpu_index"] = use_gpu_index
-            server_logger.info(f"GPU Index Enabled: {use_gpu_index}")
 
-        # 加载或构建逻辑
-        if index_path and os.path.exists(os.path.join(index_path, "metadata.json")):
+        # 针对 Faiss 体系的参数注入
+        if "faiss" in IndexClass.__name__.lower() or use_gainrag:
+            common_kwargs["use_gpu_index"] = use_gpu_index
+            if gpu_parallel_degree:
+                common_kwargs["gpu_parallel_degree"] = gpu_parallel_degree
+
+        # 针对 Compact 索引的参数注入
+        if "compact" in IndexClass.__name__.lower():
+            if target_bytes:
+                common_kwargs["target_bytes_per_vector"] = target_bytes
+            # 开启内存映射以减少内存占用
+            common_kwargs["memory_map"] = True
+
+        # 针对 GainRAG 的参数注入
+        if use_gainrag:
+            common_kwargs["gpu_id"] = gpu_id
+            if passages_path:
+                common_kwargs["passages_path"] = passages_path
+
+        # ==========================================
+        # [适配点 6] 加载或构建逻辑
+        # ==========================================
+        # 检查是否存在 metadata.json (标准 RAG) 或 index.faiss (GainRAG)
+        has_metadata = index_path and os.path.exists(os.path.join(index_path, "metadata.json"))
+        has_gainrag_index = index_path and os.path.exists(os.path.join(index_path, "index.faiss"))
+
+        should_load = has_metadata or (use_gainrag and has_gainrag_index)
+
+        if should_load:
             server_logger.info(f"Loading existing index from {index_path}...")
-            rag_index_instance = IndexClass.load_index(**load_kwargs)
+            # 调用 load_index 类方法
+            rag_index_instance = IndexClass.load_index(
+                index_path=index_path,
+                **common_kwargs
+            )
         else:
+            if use_gainrag:
+                raise RuntimeError("GainRAGIndex does not support online building. Please provide a valid index_path.")
+
             server_logger.info(f"Building new index from {kb_path}...")
-            # 构建时的参数
-            build_init_kwargs = {"model_name": model_name, "device": device}
-            if "faiss" in IndexClass.__name__.lower():
-                build_init_kwargs["use_gpu_index"] = use_gpu_index
-            
-            rag_index_instance = IndexClass(**build_init_kwargs)
-            rag_index_instance.build_index(file_path=kb_path)
-            
+            # 实例化对象
+            # 注意：GainRAGIndex 不会走这里
+            rag_index_instance = IndexClass(**common_kwargs)
+
+            # 触发构建
+            # 可以在这里根据文件大小自动决定是否使用 build_index_streaming
+            # 简单起见，这里演示标准构建，但传入 num_workers 以利用新代码的多进程能力
+            rag_index_instance.build_index(
+                file_path=kb_path,
+                num_workers=0 # 0 表示自动利用 CPU 核心数
+            )
+
             if index_path:
                 rag_index_instance.save_index(index_path)
-        
+
         server_logger.info("✅ Index loaded successfully.")
-        
+
     except Exception as e:
         server_logger.error(f"Failed to load index: {e}")
         traceback.print_exc()
-    
+        # 如果加载失败，子进程应该退出，以便 Pool 能够检测到并处理（或者留在那里让用户通过 health check 发现）
+        sys.exit(1)
+
     # 5. 启动 uvicorn
     uvicorn.run(rag_server_app, host="0.0.0.0", port=port, log_level="warning")
 

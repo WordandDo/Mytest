@@ -549,9 +549,9 @@ def create_benchmark(data_path: str,
 # Example usage
 if __name__ == "__main__":
     # Example: Load and evaluate a benchmark
-    print("Creating benchmark from math demo data...")
+    print("Creating benchmark from HotPotQA data...")
     benchmark = create_benchmark(
-        data_path="../data/math_demo.jsonl",
+        data_path="/home/a1/sdb/lb/Mytest/src/data/HotPotQA.jsonl",
         name="Math Demo",
         description="Simple math calculation benchmark"
     )
@@ -567,10 +567,16 @@ if __name__ == "__main__":
     # Evaluate with different metrics
     print("\nEvaluating with exact match...")
     results = benchmark.evaluate(predictions, metric="exact_match")
-    print(f"Exact match score: {results[0].score}")
-    
+    if results:
+        print(f"Exact match score: {results[0].score}")
+    else:
+        print("No results to evaluate - no predictions matched any benchmark items")
+
     print("\nEvaluating with F1 score...")
     results = benchmark.evaluate(predictions, metric="f1_score")
-    print(f"F1 score: {results[0].score}")
-    
+    if results:
+        print(f"F1 score: {results[0].score}")
+    else:
+        print("No results to evaluate - no predictions matched any benchmark items")
+
     print(f"\nSummary: {benchmark.get_summary()}")
