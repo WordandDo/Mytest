@@ -1,0 +1,8 @@
+{"tool_name": "search_documents", "task_id": "task_001", "timestamp": "2024-01-15T14:28:10.123456", "success": true, "error_message": null, "duration_ms": 234.56, "args": null}
+{"tool_name": "search_documents", "task_id": "task_001", "timestamp": "2024-01-15T14:28:12.234567", "success": true, "error_message": null, "duration_ms": 198.43, "args": null}
+{"tool_name": "read_file", "task_id": "task_001", "timestamp": "2024-01-15T14:28:15.345678", "success": true, "error_message": null, "duration_ms": 45.23, "args": null}
+{"tool_name": "execute_bash", "task_id": "task_001", "timestamp": "2024-01-15T14:28:30.456789", "success": false, "error_message": "FileNotFoundError: /path/to/file not found", "duration_ms": 125.45, "args": {"args": [], "kwargs": {"command": "cat /path/to/file", "task_id": "task_001"}}}
+{"tool_name": "search_documents", "task_id": "task_002", "timestamp": "2024-01-15T14:29:00.567890", "success": true, "error_message": null, "duration_ms": 312.78, "args": null}
+{"tool_name": "read_file", "task_id": "task_002", "timestamp": "2024-01-15T14:29:05.678901", "success": true, "error_message": null, "duration_ms": 56.89, "args": null}
+{"tool_name": "execute_bash", "task_id": "task_002", "timestamp": "2024-01-15T14:29:10.789012", "success": true, "error_message": null, "duration_ms": 89.12, "args": null}
+{"tool_name": "execute_bash", "task_id": "task_003", "timestamp": "2024-01-15T14:30:15.789012", "success": false, "error_message": "PermissionError: Permission denied", "duration_ms": 98.32, "args": {"args": [], "kwargs": {"command": "rm /protected/file", "task_id": "task_003"}}}

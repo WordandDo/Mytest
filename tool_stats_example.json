@@ -1,0 +1,185 @@
+{
+  "generated_at": "2024-01-15T14:30:25.123456",
+  "all_tasks_report": {
+    "summary": {
+      "total_tasks": 3,
+      "total_calls": 15,
+      "total_success": 13,
+      "total_failed": 2,
+      "overall_success_rate": 86.67
+    },
+    "tasks": [
+      {
+        "task_id": "task_001",
+        "total_calls": 8,
+        "success_calls": 7,
+        "failed_calls": 1,
+        "success_rate": 87.5,
+        "tool_breakdown": {
+          "search_documents": {
+            "success": 3,
+            "failed": 0
+          },
+          "execute_bash": {
+            "success": 2,
+            "failed": 1
+          },
+          "read_file": {
+            "success": 2,
+            "failed": 0
+          }
+        }
+      },
+      {
+        "task_id": "task_002",
+        "total_calls": 5,
+        "success_calls": 5,
+        "failed_calls": 0,
+        "success_rate": 100.0,
+        "tool_breakdown": {
+          "search_documents": {
+            "success": 3,
+            "failed": 0
+          },
+          "read_file": {
+            "success": 2,
+            "failed": 0
+          }
+        }
+      },
+      {
+        "task_id": "task_003",
+        "total_calls": 2,
+        "success_calls": 1,
+        "failed_calls": 1,
+        "success_rate": 50.0,
+        "tool_breakdown": {
+          "execute_bash": {
+            "success": 1,
+            "failed": 1
+          }
+        }
+      }
+    ]
+  },
+  "tool_report": {
+    "total_tools": 3,
+    "tools": [
+      {
+        "tool_name": "search_documents",
+        "total_calls": 6,
+        "success_calls": 6,
+        "failed_calls": 0,
+        "success_rate": 100.0
+      },
+      {
+        "tool_name": "read_file",
+        "total_calls": 4,
+        "success_calls": 4,
+        "failed_calls": 0,
+        "success_rate": 100.0
+      },
+      {
+        "tool_name": "execute_bash",
+        "total_calls": 5,
+        "success_calls": 3,
+        "failed_calls": 2,
+        "success_rate": 60.0
+      }
+    ]
+  },
+  "failed_calls": [
+    {
+      "tool_name": "execute_bash",
+      "task_id": "task_001",
+      "timestamp": "2024-01-15T14:28:30.456789",
+      "success": false,
+      "error_message": "FileNotFoundError: /path/to/file not found",
+      "duration_ms": 125.45,
+      "args": {
+        "args": [],
+        "kwargs": {
+          "command": "cat /path/to/file",
+          "task_id": "task_001"
+        }
+      }
+    },
+    {
+      "tool_name": "execute_bash",
+      "task_id": "task_003",
+      "timestamp": "2024-01-15T14:30:15.789012",
+      "success": false,
+      "error_message": "PermissionError: Permission denied",
+      "duration_ms": 98.32,
+      "args": {
+        "args": [],
+        "kwargs": {
+          "command": "rm /protected/file",
+          "task_id": "task_003"
+        }
+      }
+    }
+  ],
+  "detailed_records": [
+    {
+      "tool_name": "search_documents",
+      "task_id": "task_001",
+      "timestamp": "2024-01-15T14:28:10.123456",
+      "success": true,
+      "error_message": null,
+      "duration_ms": 234.56,
+      "args": null
+    },
+    {
+      "tool_name": "search_documents",
+      "task_id": "task_001",
+      "timestamp": "2024-01-15T14:28:12.234567",
+      "success": true,
+      "error_message": null,
+      "duration_ms": 198.43,
+      "args": null
+    },
+    {
+      "tool_name": "read_file",
+      "task_id": "task_001",
+      "timestamp": "2024-01-15T14:28:15.345678",
+      "success": true,
+      "error_message": null,
+      "duration_ms": 45.23,
+      "args": null
+    },
+    {
+      "tool_name": "execute_bash",
+      "task_id": "task_001",
+      "timestamp": "2024-01-15T14:28:30.456789",
+      "success": false,
+      "error_message": "FileNotFoundError: /path/to/file not found",
+      "duration_ms": 125.45,
+      "args": {
+        "args": [],
+        "kwargs": {
+          "command": "cat /path/to/file",
+          "task_id": "task_001"
+        }
+      }
+    },
+    {
+      "tool_name": "search_documents",
+      "task_id": "task_002",
+      "timestamp": "2024-01-15T14:29:00.567890",
+      "success": true,
+      "error_message": null,
+      "duration_ms": 312.78,
+      "args": null
+    },
+    {
+      "tool_name": "read_file",
+      "task_id": "task_002",
+      "timestamp": "2024-01-15T14:29:05.678901",
+      "success": true,
+      "error_message": null,
+      "duration_ms": 56.89,
+      "args": null
+    }
+  ]
+}

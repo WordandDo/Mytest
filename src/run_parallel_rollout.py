@@ -295,8 +295,8 @@ def run_parallel_rollout(
             "configuration": {
                 "num_rollouts": config.num_rollouts,
                 "env_mode": config.env_mode,
-                "model_name": agent_config_dict.get("model_name", "N/A"),
-                "max_turns": agent_config_dict.get("max_turns", "N/A")
+                #"model_name": agent_config_dict.get("model_name", "N/A"),
+                #"max_turns": agent_config_dict.get("max_turns", "N/A")
             },
             "tasks_summary": {
                 "total_tasks": len(results),

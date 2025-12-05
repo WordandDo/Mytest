@@ -1,0 +1,54 @@
+{
+  "timestamp": "2025-12-06T05:01:11.472308",
+  "evaluation_metrics": [
+    "exact_match",
+    "f1_score",
+    "similarity",
+    "contains_answer"
+  ],
+  "metrics_statistics": {
+    "exact_match": {
+      "total_items": 0,
+      "successful_items": 0,
+      "failed_items": 0,
+      "average_score": 0.0,
+      "success_rate": 0.0
+    },
+    "f1_score": {
+      "total_items": 0,
+      "successful_items": 0,
+      "failed_items": 0,
+      "average_score": 0.0,
+      "success_rate": 0.0
+    },
+    "similarity": {
+      "total_items": 0,
+      "successful_items": 0,
+      "failed_items": 0,
+      "average_score": 0.0,
+      "success_rate": 0.0
+    },
+    "contains_answer": {
+      "total_items": 0,
+      "successful_items": 0,
+      "failed_items": 0,
+      "average_score": 0.0,
+      "success_rate": 0.0
+    }
+  },
+  "execution_time": {
+    "total_seconds": 0.8632833957672119,
+    "formatted": "00:00:00",
+    "start_time": "2025-12-06 05:01:10",
+    "end_time": "2025-12-06 05:01:11"
+  },
+  "configuration": {
+    "num_rollouts": 10,
+    "env_mode": "http_mcp_rag"
+  },
+  "tasks_summary": {
+    "total_tasks": 500,
+    "successful_predictions": 0,
+    "failed_predictions": 500
+  }
+}

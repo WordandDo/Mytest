@@ -3,7 +3,7 @@
 
 # 设置默认参数
 DATA_PATH="${DATA_PATH:-src/data/HotPotQA.jsonl}"
-NUM_ROLLOUTS="${NUM_ROLLOUTS:-50}"
+NUM_ROLLOUTS="${NUM_ROLLOUTS:-10}"
 MODEL_NAME="${MODEL_NAME:-gpt-4.1-2025-04-14}"
 MAX_TURNS="${MAX_TURNS:-15}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/rag_only}"
