@@ -2,7 +2,7 @@
 # 运行 RAG-only 环境的示例脚本
 
 # 设置默认参数
-DATA_PATH="${DATA_PATH:-src/data/HotPotQA.jsonl}"
+DATA_PATH="${DATA_PATH:-src/data/HotPotQA_demo.jsonl}"
 NUM_ROLLOUTS="${NUM_ROLLOUTS:-10}"
 MODEL_NAME="${MODEL_NAME:-gpt-4.1-2025-04-14}"
 MAX_TURNS="${MAX_TURNS:-15}"

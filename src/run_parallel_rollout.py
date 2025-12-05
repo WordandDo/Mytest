@@ -72,6 +72,9 @@ def run_parallel_rollout(
     """
     运行并行 Rollout 框架 (MCP 纯净版)
     """
+    # [新增] 1. 开始计时
+    benchmark_start_time = time.time()
+
     logger.info("=" * 60)
     logger.info("Starting Parallel Rollout Framework (MCP Native)")
     logger.info(f"  Num Rollouts: {config.num_rollouts}")
@@ -144,6 +147,15 @@ def run_parallel_rollout(
                 if proc.is_alive():
                     proc.terminate()
         
+        # [新增] 2. 结束计时并计算时长
+        benchmark_end_time = time.time()
+        total_duration_seconds = benchmark_end_time - benchmark_start_time
+        
+        # [新增] 3. 格式化时间显示 (HH:MM:SS)
+        m, s = divmod(total_duration_seconds, 60)
+        h, m = divmod(m, 60)
+        duration_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+
         # 4. 收集结果并评测
         results = list(shared_results)
         
@@ -168,6 +180,10 @@ def run_parallel_rollout(
         if benchmark_results:
             avg_score = sum(r.score for r in benchmark_results) / len(benchmark_results)
             logger.info(f"  Average Score: {avg_score:.4f}")
+        
+        # [新增] 4. 在日志中输出总耗时
+        logger.info("-" * 30)
+        logger.info(f"  Total Duration: {duration_str} ({total_duration_seconds:.2f}s)")
         logger.info("=" * 60)
         
         # 保存结果
@@ -189,7 +205,8 @@ def run_parallel_rollout(
 
         return {
             "worker_results": results,
-            "benchmark_evaluation": benchmark_results
+            "benchmark_evaluation": benchmark_results,
+            "total_duration": total_duration_seconds # [可选] 也可以将时间返回给调用者
         }
 
 

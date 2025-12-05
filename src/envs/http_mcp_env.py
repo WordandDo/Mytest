@@ -453,7 +453,7 @@ class HttpMCPEnv:
                 "get_observation", "evaluate_task",
                 "allocate_batch_resources", "setup_batch_resources",
                 "get_batch_initial_observations", "setup_vm_session",
-                "setup_rag_session", "teardown_environment", "release_rag_session",
+                "setup_rag_session", "teardown_rag_session", "teardown_environment", "release_rag_session",
             }
 
             valid_tools = []

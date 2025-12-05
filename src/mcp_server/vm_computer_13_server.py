@@ -34,7 +34,7 @@ RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 print(f"🚀 Starting VM Computer 13 MCP Server (Registry Mode)")
 
 # 全局会话字典，Key 为 worker_id
-GLOBAL_SESSIONS = {}
+VM_SESSIONS = {}
 
 # --- 通用功能提取 (与 os_pyautogui_server 保持一致) ---
 
@@ -50,7 +50,7 @@ async def vm_computer_13_initialization(worker_id: str, config_content = None) -
     try:
         logger.info(f"[{worker_id}] VM initialization started. config_content type: {type(config_content)}")
 
-        session = GLOBAL_SESSIONS.get(worker_id)
+        session = VM_SESSIONS.get(worker_id)
         if not session or not session.get("controller"):
             # Session未找到，尝试调用 setup_vm_session 工具进行初始化
             try:
@@ -104,8 +104,8 @@ async def vm_computer_13_initialization(worker_id: str, config_content = None) -
             execute_setup_steps(controller, setup_steps)
             logger.info(f"[{worker_id}] Setup steps completed")
 
-        # 将 evaluator 缓存到 GLOBAL_SESSIONS 中供后续 evaluate_task 使用
-        GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
+        # 将 evaluator 缓存到 VM_SESSIONS 中供后续 evaluate_task 使用
+        VM_SESSIONS[worker_id]["evaluator"] = evaluator
         logger.info(f"[{worker_id}] VM initialization completed successfully")
 
         return True
@@ -114,7 +114,7 @@ async def vm_computer_13_initialization(worker_id: str, config_content = None) -
         return False
 
 def _get_controller(worker_id: str) -> PythonController:
-    session = GLOBAL_SESSIONS.get(worker_id)
+    session = VM_SESSIONS.get(worker_id)
     if not session or not session.get("controller"):
         raise RuntimeError(f"Session not found for worker: {worker_id}. Call 'setup_computer_13_session' first.")
     return session["controller"]
@@ -224,7 +224,7 @@ async def setup_computer_13_session(config_name: str, task_id: str, worker_id: s
         # time.sleep(3) # 根据需要保留或移除
         
         # 存入全局会话
-        GLOBAL_SESSIONS[worker_id] = {
+        VM_SESSIONS[worker_id] = {
             "controller": controller,
             "env_id": env_id,
             "task_id": task_id
@@ -242,7 +242,7 @@ async def setup_computer_13_session(config_name: str, task_id: str, worker_id: s
                         from src.utils.desktop_env.controllers.setup import execute_setup_steps
                         execute_setup_steps(controller, setup_steps)
                     
-                    GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
+                    VM_SESSIONS[worker_id]["evaluator"] = evaluator
                     
                 except json.JSONDecodeError as e:
                     return json.dumps({"status": "error", "message": f"Invalid JSON in init_script: {e}"})
@@ -272,7 +272,7 @@ async def teardown_computer_13_environment(worker_id: str) -> str:
     [System Tool] Teardown computer 13 environment.
     Releases resources associated with the session.
     """
-    session = GLOBAL_SESSIONS.get(worker_id)
+    session = VM_SESSIONS.get(worker_id)
     if session:
         env_id = session.get("env_id")
         async with httpx.AsyncClient() as client:
@@ -281,7 +281,7 @@ async def teardown_computer_13_environment(worker_id: str) -> str:
                                 json={"resource_id": env_id, "worker_id": worker_id}, timeout=10)
             except:
                 pass
-        GLOBAL_SESSIONS.pop(worker_id, None)
+        VM_SESSIONS.pop(worker_id, None)
     return "Released"
 
 @ToolRegistry.register_tool("computer_lifecycle", hidden=True)
@@ -290,7 +290,7 @@ async def evaluate_computer_13_task(worker_id: str) -> str:
     [System Tool] Evaluate computer 13 task result.
     Calculates the score based on the evaluator configuration.
     """
-    session = GLOBAL_SESSIONS.get(worker_id)
+    session = VM_SESSIONS.get(worker_id)
     
     if not session or not session.get("evaluator"):
         return "0.0"

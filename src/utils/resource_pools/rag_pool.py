@@ -271,8 +271,11 @@ class RAGPoolImpl(AbstractPoolManager):
         
         # 2. 等待服务就绪 (简单的轮询检查)
         import requests
-        retries = 30 # 30秒超时
-        logger.info("Waiting for RAG Server to be ready...")
+        # [修改] 尝试从配置中读取 server_start_retries，默认为 30
+        # 这里的 self.rag_config 就是 deployment_config.json 中 "config" 下的内容
+        retries = int(self.rag_config.get("server_start_retries", 30))
+        
+        logger.info(f"Waiting for RAG Server to be ready (timeout={retries}s)...")
         for _ in range(retries):
             try:
                 resp = requests.get(f"{self.service_url}/health", timeout=1)

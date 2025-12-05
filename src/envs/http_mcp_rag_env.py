@@ -26,7 +26,8 @@ class HttpMCPRagEnv(HttpMCPEnv):
     RAG-only environment that inherits from HttpMCPEnv
 
     This environment is configured to use only RAG resources with a specialized
-    prompt for information retrieval tasks.
+    prompt for information retrieval tasks. It follows the self-managed lifecycle
+    pattern where it explicitly calls setup_rag_session to allocate resources.
     """
 
     def __init__(self,
@@ -104,3 +105,20 @@ class HttpMCPRagEnv(HttpMCPEnv):
                 )
 
         return config
+
+    # NOTE: allocate_resource override removed to use unified batch allocation pattern
+    # The parent class's default implementation now handles RAG resource allocation via:
+    # 1. allocate_batch_resources(["rag"]) - allocates RAG resource from resource pool
+    # 2. _sync_resource_sessions() - automatically syncs to RAG_SESSIONS
+    # 3. setup_batch_resources() - calls rag_initialization() if configured
+    # 4. get_batch_initial_observations() - gets initial state
+    #
+    # To provide RAG configuration (e.g., top_k), pass resource_init_data when calling
+    # allocate_resource(), which will be forwarded to rag_initialization().
+
+    # NOTE: release_resource and cleanup overrides also removed to use unified batch pattern
+    # The parent class's default implementation handles resource release via:
+    # 1. release_batch_resources() - releases all allocated resources
+    # 2. _cleanup_resource_sessions() - clears local session caches
+    # This ensures consistent resource lifecycle management across all resource types.
+

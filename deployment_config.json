@@ -56,7 +56,9 @@
         "use_gainrag": true,
         "use_gpu_index": true,
         "gpu_id": 0,
-        "default_top_k": 10
+        "default_top_k": 10,
+        
+        "server_start_retries": 600
       }
     },
     "web_search": {
