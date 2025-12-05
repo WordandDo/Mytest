@@ -164,26 +164,56 @@ def run_parallel_rollout(
             for result in results
             if result.get("success", False)
         }
-        
-        evaluation_metric = config.agent_config_dict.get("evaluation_metric", "exact_match")
-        benchmark_results = benchmark.evaluate(
-            predictions=predictions,
-            metric=evaluation_metric
-        )
-        
-        # 计算评分统计信息
-        total_items = len(benchmark_results)
-        successful_items = len([r for r in benchmark_results if r.score > 0])
-        failed_items = total_items - successful_items
-        avg_score = sum(r.score for r in benchmark_results) / total_items if total_items > 0 else 0.0
 
+        # 支持多个评分指标：可以是单个指标字符串或指标列表
+        evaluation_config = config.agent_config_dict.get("evaluation_metric", "exact_match")
+        if isinstance(evaluation_config, str):
+            evaluation_metrics = [evaluation_config]
+        else:
+            evaluation_metrics = list(evaluation_config)
+
+        # 对每个指标分别进行评测
+        all_benchmark_results = {}  # {metric_name: [EvaluationResult]}
+        metrics_statistics = {}     # {metric_name: {total, successful, failed, avg_score, ...}}
+
+        logger.info(f"Evaluating with {len(evaluation_metrics)} metric(s): {', '.join(evaluation_metrics)}")
+
+        for metric in evaluation_metrics:
+            logger.info(f"  Computing metric: {metric}...")
+            metric_results = benchmark.evaluate(
+                predictions=predictions,
+                metric=metric
+            )
+            all_benchmark_results[metric] = metric_results
+
+            # 计算该指标的统计信息
+            total_items = len(metric_results)
+            successful_items = len([r for r in metric_results if r.score > 0])
+            failed_items = total_items - successful_items
+            avg_score = sum(r.score for r in metric_results) / total_items if total_items > 0 else 0.0
+
+            metrics_statistics[metric] = {
+                "total_items": total_items,
+                "successful_items": successful_items,
+                "failed_items": failed_items,
+                "average_score": avg_score,
+                "success_rate": successful_items / total_items if total_items > 0 else 0.0
+            }
+
+        # 输出所有指标的评测结果
         logger.info("=" * 60)
         logger.info("Benchmark Evaluation Results")
-        logger.info(f"  Metric: {evaluation_metric}")
-        logger.info(f"  Total Items: {total_items}")
-        logger.info(f"  Successful: {successful_items}")
-        logger.info(f"  Failed: {failed_items}")
-        logger.info(f"  Average Score: {avg_score:.4f}")
+        logger.info(f"  Metrics: {', '.join(evaluation_metrics)}")
+        logger.info(f"  Total Tasks: {len(results)}")
+        logger.info(f"  Successful Predictions: {len(predictions)}")
+        logger.info("")
+        for metric, stats in metrics_statistics.items():
+            logger.info(f"  [{metric}]")
+            logger.info(f"    Total Items: {stats['total_items']}")
+            logger.info(f"    Successful: {stats['successful_items']}")
+            logger.info(f"    Failed: {stats['failed_items']}")
+            logger.info(f"    Average Score: {stats['average_score']:.4f}")
+            logger.info(f"    Success Rate: {stats['success_rate']:.2%}")
         logger.info("=" * 60)
 
         # [新增] 4. 在日志中输出总耗时（更显眼的格式）
@@ -206,38 +236,56 @@ def run_parallel_rollout(
                 json.dump(res, f, ensure_ascii=False)
                 f.write("\n")
 
-        # [新增] 保存详细的评分结果
+        # [新增] 保存详细的评分结果（包含所有指标的分数）
         scores_file = os.path.join(config.output_dir, "evaluation_scores.json")
         logger.info(f"Saving evaluation scores to {scores_file}...")
 
-        # 构建详细的评分数据
+        # 构建详细的评分数据：每个任务包含所有指标的分数
+        # 首先获取所有任务ID
+        all_task_ids = set()
+        for metric_results in all_benchmark_results.values():
+            for eval_result in metric_results:
+                all_task_ids.add(eval_result.task_id)
+
+        # 为每个任务构建评分记录
         detailed_scores = []
-        for eval_result in benchmark_results:
+        for task_id in sorted(all_task_ids):
+            # 获取该任务在第一个指标中的基本信息（预测答案和真实答案）
+            first_metric = evaluation_metrics[0]
+            first_result = next((r for r in all_benchmark_results[first_metric] if r.task_id == task_id), None)
+
+            if first_result is None:
+                continue
+
             score_record = {
-                "task_id": eval_result.task_id,
-                "score": eval_result.score,
-                "predicted_answer": eval_result.predicted,
-                "ground_truth": eval_result.expected,
-                "is_correct": eval_result.score > 0
+                "task_id": task_id,
+                "predicted_answer": first_result.predicted,
+                "ground_truth": first_result.expected,
+                "scores": {},  # 存储所有指标的分数
+                "is_correct": {}  # 存储每个指标是否正确
             }
+
+            # 收集该任务在所有指标下的分数
+            for metric in evaluation_metrics:
+                metric_result = next((r for r in all_benchmark_results[metric] if r.task_id == task_id), None)
+                if metric_result:
+                    score_record["scores"][metric] = metric_result.score
+                    score_record["is_correct"][metric] = metric_result.score > 0
+
             detailed_scores.append(score_record)
 
         # 保存详细评分
         with open(scores_file, "w", encoding="utf-8") as f:
             json.dump(detailed_scores, f, indent=2, ensure_ascii=False)
 
-        # [新增] 保存汇总统计结果
+        # [新增] 保存汇总统计结果（包含所有指标的统计信息）
         summary_file = os.path.join(config.output_dir, "evaluation_summary.json")
         logger.info(f"Saving evaluation summary to {summary_file}...")
 
         summary_data = {
             "timestamp": datetime.now().isoformat(),
-            "evaluation_metric": evaluation_metric,
-            "total_items": total_items,
-            "successful_items": successful_items,
-            "failed_items": failed_items,
-            "average_score": avg_score,
-            "success_rate": successful_items / total_items if total_items > 0 else 0.0,
+            "evaluation_metrics": evaluation_metrics,  # 改为列表
+            "metrics_statistics": metrics_statistics,  # 包含所有指标的统计信息
             "execution_time": {
                 "total_seconds": total_duration_seconds,
                 "formatted": duration_str,
@@ -249,6 +297,11 @@ def run_parallel_rollout(
                 "env_mode": config.env_mode,
                 "model_name": agent_config_dict.get("model_name", "N/A"),
                 "max_turns": agent_config_dict.get("max_turns", "N/A")
+            },
+            "tasks_summary": {
+                "total_tasks": len(results),
+                "successful_predictions": len(predictions),
+                "failed_predictions": len(results) - len(predictions)
             }
         }
 
@@ -272,8 +325,9 @@ def run_parallel_rollout(
 
         return {
             "worker_results": results,
-            "benchmark_evaluation": benchmark_results,
-            "total_duration": total_duration_seconds # [可选] 也可以将时间返回给调用者
+            "benchmark_evaluation": all_benchmark_results,  # 现在包含所有指标的结果
+            "metrics_statistics": metrics_statistics,       # 添加统计信息
+            "total_duration": total_duration_seconds
         }
 
 
@@ -505,7 +559,14 @@ if __name__ == "__main__":
     # 额外配置 (Agent)
     parser.add_argument("--model_name", type=str, default="gpt-4.1-2025-04-14", help="Agent model name")
     parser.add_argument("--max_turns", type=int, default=15, help="Max turns per task")
-    
+    parser.add_argument(
+        "--evaluation_metric",
+        type=str,
+        nargs='+',
+        default=["exact_match"],
+        help="Evaluation metric(s) to use. Can specify multiple: --evaluation_metric exact_match f1_score"
+    )
+
     args = parser.parse_args()
     
     benchmark = Benchmark(data_path=args.data_path)
@@ -524,7 +585,7 @@ if __name__ == "__main__":
         env_kwargs=env_kwargs,
         agent_config_dict={
             "model_name": args.model_name,
-            "evaluation_metric": "exact_match",
+            "evaluation_metric": args.evaluation_metric if len(args.evaluation_metric) > 1 else args.evaluation_metric[0],
             "max_turns": args.max_turns,
             "max_retries": 2
         }

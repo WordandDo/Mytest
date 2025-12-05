@@ -48,7 +48,7 @@
       "enabled": true,
       "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
       "config": {
-        "num_rag_workers": 10,
+        "num_rag_workers": 50,
         "rag_index_path": "/home/a1/sdb/wikidata4rag/wikipedia_embeddings",
         "rag_model_name": "facebook/contriever",
         "passages_path": "/home/a1/sdb/wikidata4rag/psgs_w100.tsv",
