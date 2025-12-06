@@ -129,7 +129,7 @@ async def get_batch_initial_observations(worker_id: str) -> str:
     # RAG 的状态通常是静态的，这里可以简单返回 ready 或者去 ResourceAPI 查，
     # 但为了简化，如果 RAG 已分配，我们可以返回一个简单的状态对象
     try:
-        from mcp_server.rag_server import RAG_SESSIONS
+        from mcp_server.rag_server import GLOBAL_SESSIONS as RAG_SESSIONS
         if worker_id in RAG_SESSIONS:
             observations["rag"] = {
                 "status": "ready", 
@@ -227,7 +227,7 @@ async def _sync_resource_sessions(worker_id: str, allocated_resources: dict):
     if "rag" in allocated_resources:
         rag_info = allocated_resources["rag"]
         try:
-            from mcp_server.rag_server import RAG_SESSIONS
+            from mcp_server.rag_server import GLOBAL_SESSIONS as RAG_SESSIONS
             resource_id = rag_info.get("id")
             token = rag_info.get("token")
             # [关键修正] 必须同时提取 base_url
@@ -291,7 +291,7 @@ async def _cleanup_resource_sessions(worker_id: str):
     """
     # 清理 RAG
     try:
-        from mcp_server.rag_server import RAG_SESSIONS
+        from mcp_server.rag_server import GLOBAL_SESSIONS as RAG_SESSIONS
         if worker_id in RAG_SESSIONS:
             del RAG_SESSIONS[worker_id]
             logger.info(f"[{worker_id}] Cleaned up RAG session")

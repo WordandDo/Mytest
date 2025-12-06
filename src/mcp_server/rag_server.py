@@ -24,7 +24,7 @@ RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 
 # 全局会话字典，Key 为 worker_id
 # 结构: { worker_id: { "resource_id": str, "token": str, "base_url": str, "config_top_k": int } }
-RAG_SESSIONS: Dict[str, Dict[str, Any]] = {}
+GLOBAL_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 # =============================================================================
 # RAG Initialization Function (Batch Allocation Pattern)
@@ -34,7 +34,7 @@ async def rag_initialization(worker_id: str, config_content = None) -> bool:
     """
     RAG resource initialization function, automatically called by setup_batch_resources.
 
-    This function is invoked after RAG resources have been allocated and synced to RAG_SESSIONS.
+    This function is invoked after RAG resources have been allocated and synced to GLOBAL_SESSIONS.
     It handles any additional initialization logic, such as parsing and storing configuration
     parameters (e.g., top_k) from the task config.
 
@@ -46,9 +46,9 @@ async def rag_initialization(worker_id: str, config_content = None) -> bool:
     Returns:
         bool: True if initialization succeeded, False otherwise
     """
-    session = RAG_SESSIONS.get(worker_id)
+    session = GLOBAL_SESSIONS.get(worker_id)
     if not session:
-        logger.error(f"[{worker_id}] RAG session not found in RAG_SESSIONS. "
+        logger.error(f"[{worker_id}] RAG session not found in GLOBAL_SESSIONS. "
                     "Ensure _sync_resource_sessions was called first.")
         return False
 
@@ -99,8 +99,8 @@ async def setup_rag_session(worker_id: str, config: str = "{}") -> str:
     logger.warning(f"[{worker_id}] setup_rag_session is DEPRECATED. Use batch allocation instead.")
 
     # Check if session already exists (from batch allocation)
-    if worker_id in RAG_SESSIONS:
-        session = RAG_SESSIONS[worker_id]
+    if worker_id in GLOBAL_SESSIONS:
+        session = GLOBAL_SESSIONS[worker_id]
 
         # Parse and apply configuration if provided
         try:
@@ -144,7 +144,7 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] 
         JSON string with query results
     """
     # Check if session exists
-    session = RAG_SESSIONS.get(worker_id)
+    session = GLOBAL_SESSIONS.get(worker_id)
     if not session:
         error_msg = "No active RAG session. Call setup_rag_session first."
         logger.error(f"[{worker_id}] {error_msg}")
@@ -216,7 +216,7 @@ async def teardown_rag_session(worker_id: str) -> str:
     Returns:
         Status message string
     """
-    session = RAG_SESSIONS.pop(worker_id, None)
+    session = GLOBAL_SESSIONS.pop(worker_id, None)
 
     if not session:
         logger.warning(f"[{worker_id}] No active RAG session to release.")
