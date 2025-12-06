@@ -1,0 +1,3 @@
+{"id": "search-001", "question": "使用搜索引擎找出电影《奥本海默》的全球票房是多少美元？", "answer": "9.6亿美元", "metadata": {"tool_usage": ["web_search"]}}
+{"id": "search-002", "question": "搜索 Python 3.12 的发布日期，并简述其一个新特性。", "answer": "2023-10-02", "metadata": {"tool_usage": ["web_search"]}}
+{"id": "search-003", "question": "查找 iPhone 15 Pro 的发布价格（美元），并找出其使用的芯片名称。", "answer": "999, A17 Pro", "metadata": {"tool_usage": ["web_search"]}}
