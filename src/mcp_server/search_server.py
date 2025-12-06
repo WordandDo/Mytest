@@ -97,7 +97,7 @@ async def reverse_image_search(image_url: str, k: int = 3) -> str:
     except Exception as e:
         return f"Error executing image search: {str(e)}"
 
-@ToolRegistry.register_tool("search_tools")
+@ToolRegistry.register_tool("search_tools", hidden=True)
 async def upload_file_to_cloud(file_path: str) -> str:
     """
     Upload a local file (e.g., a screenshot taken by the agent) to cloud storage and get a public URL.
