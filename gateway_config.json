@@ -10,7 +10,12 @@
     {
       "resource_type": "rag",
       "tool_groups": ["rag_lifecycle", "rag_query"]
+    },
+    {
+      "name": "search_module",
+      "resource_type": "system",
+      "tool_groups": ["search_tools"],
+      "path": "mcp_server.search_tools"
     }
-    
   ]
 }
