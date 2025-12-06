@@ -1,6 +1,7 @@
 # Environment files
 .env
-
+#results directory
+/results/
 # Python
 __pycache__/
 *.py[cod]

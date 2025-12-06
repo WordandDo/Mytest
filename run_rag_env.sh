@@ -8,6 +8,7 @@ MODEL_NAME="${MODEL_NAME:-gpt-4.1-2025-04-14}"
 MAX_TURNS="${MAX_TURNS:-15}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/rag_only}"
 MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:8080}"
+TASK_EXECUTION_TIMEOUT="${TASK_EXECUTION_TIMEOUT:-900}"
 
 # 评测指标：支持多个指标，用空格分隔
 # 可选指标：exact_match, f1_score, bleu_score, rouge_score, similarity, contains_answer, numeric_match, llm_judgement
@@ -20,6 +21,7 @@ echo "Data Path: $DATA_PATH"
 echo "Num Rollouts: $NUM_ROLLOUTS"
 echo "Model: $MODEL_NAME"
 echo "Max Turns: $MAX_TURNS"
+echo "Task Timeout: $TASK_EXECUTION_TIMEOUT seconds"
 echo "Output Dir: $OUTPUT_DIR"
 echo "MCP Server: $MCP_SERVER_URL"
 echo "Evaluation Metrics: $EVALUATION_METRICS"

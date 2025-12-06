@@ -1,0 +1,9 @@
+aiohttp>=3.8.0
+asyncio-throttle>=1.0.2
+openai>=1.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+urllib3>=2.0.0
+pan123>=1.0.0
+serpapi>=0.1.5
+pathlib2>=2.3.7

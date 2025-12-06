@@ -1,0 +1,75 @@
+{
+  "timestamp": "2025-10-27T19:51:55.704428",
+  "search_query": "wine glass",
+  "total_results": 6,
+  "image_url": "https://youke1.picui.cn/s1/2025/10/27/68ff3e07492f5.png",
+  "num_results_returned": 6,
+  "results": [
+    {
+      "position": 1,
+      "title": "Wine Glasses: Home & Kitchen - Amazon.com",
+      "link": "https://www.amazon.com/Wine-Glasses/b?ie=UTF8&node=13218541",
+      "snippet": "Glass · Metal · Plastic · Bamboo · Ceramic · Cork · Marble · Paper · Wood ... Red Wine · White Wine · Stemless · Dessert. Seller. Mug Million · DesiDD · WestDepot.",
+      "thumbnail": null,
+      "displayed_link": "https://www.amazon.com › Wine-Glasses",
+      "source": "Amazon.com",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.amazon.com/Wine-Glasses/b%3Fie%3DUTF8%26node%3D13218541&ved=2ahUKEwiOvaCcqMSQAxW5QjABHcQ9DMgQFnoECAoQAQ",
+      "favicon": "https://serpapi.com/searches/68ff5ca1e22fed013c56e38f/images/89ba2ab2ad257d87496848d382d334ea66f3bc9d32b89bb5.png"
+    },
+    {
+      "position": 2,
+      "title": "Best Wine Glasses & Stemware - Crate & Barrel",
+      "link": "https://www.crateandbarrel.com/dining-and-entertaining/wine-glasses/1",
+      "snippet": "Shop online for individual wine glasses and sets for reds, whites and roses. Browse classic stemware and modern stemless wine glass styles.",
+      "thumbnail": null,
+      "displayed_link": "https://www.crateandbarrel.com › ... › Drinkware",
+      "source": "Crate & Barrel",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.crateandbarrel.com/dining-and-entertaining/wine-glasses/1&ved=2ahUKEwiOvaCcqMSQAxW5QjABHcQ9DMgQFnoECAkQAQ",
+      "favicon": "https://serpapi.com/searches/68ff5ca1e22fed013c56e38f/images/89ba2ab2ad257d87baa6bc24c3f86e6f05cc7c6c9bdea731.png"
+    },
+    {
+      "position": 3,
+      "title": "WINE GLASS | Printers Row Wine Online",
+      "link": "https://www.printersrowwine.com/product/wine-glass/5653",
+      "snippet": "This store is not yet accepting payments. How to get it. Required. Local delivery. Check your address. Store pickup. Printers Row Wine Shop.",
+      "thumbnail": null,
+      "displayed_link": "https://www.printersrowwine.com › product › wine-glass",
+      "source": "printersrowwine.com",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.printersrowwine.com/product/wine-glass/5653&ved=2ahUKEwiOvaCcqMSQAxW5QjABHcQ9DMgQFnoECBcQAQ",
+      "favicon": "https://serpapi.com/searches/68ff5ca1e22fed013c56e38f/images/89ba2ab2ad257d874bf0687fd4e561e1779401dbef0d6241.png"
+    },
+    {
+      "position": 4,
+      "title": "Untitled",
+      "link": "https://staging-www.personalizationmall.com/Product.aspx?productid=51377&itemid=140079&",
+      "snippet": "No information is available for this page.",
+      "thumbnail": null,
+      "displayed_link": "https://staging-www.personalizationmall.com › Product",
+      "source": "Personalization Mall",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://staging-www.personalizationmall.com/Product.aspx%3Fproductid%3D51377%26itemid%3D140079%26&ved=2ahUKEwiOvaCcqMSQAxW5QjABHcQ9DMgQFnoECBEQAQ",
+      "favicon": null
+    },
+    {
+      "position": 5,
+      "title": "Edge 15-Oz. Red Wine Glass - ShopMy",
+      "link": "https://shopmy.us/shop/product/466773?Curator_id=91402",
+      "snippet": null,
+      "thumbnail": null,
+      "displayed_link": "https://shopmy.us › shop › product",
+      "source": "ShopMy",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://shopmy.us/shop/product/466773%3FCurator_id%3D91402&ved=2ahUKEwiOvaCcqMSQAxW5QjABHcQ9DMgQFnoECA0QAQ",
+      "favicon": "https://serpapi.com/searches/68ff5ca1e22fed013c56e38f/images/89ba2ab2ad257d87900661d279ca238c321e2b8348f1c6c1.png"
+    },
+    {
+      "position": 6,
+      "title": "Edge 15-Oz. Red Wine Glass - ShopMy",
+      "link": "https://shopmy.us/shop/product/466773?Curator_id=90310",
+      "snippet": null,
+      "thumbnail": null,
+      "displayed_link": "https://shopmy.us › shop › product",
+      "source": "ShopMy",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://shopmy.us/shop/product/466773%3FCurator_id%3D90310&ved=2ahUKEwiOvaCcqMSQAxW5QjABHcQ9DMgQFnoECA4QAQ",
+      "favicon": "https://serpapi.com/searches/68ff5ca1e22fed013c56e38f/images/89ba2ab2ad257d87888bcbcf1aa34479d1dcc47e27fb5b10.png"
+    }
+  ]
+}

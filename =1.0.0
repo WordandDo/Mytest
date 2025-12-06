@@ -1,0 +1,5 @@
+Looking in indexes: https://pypi.tuna.tsinghua.edu.cn/simple
+Collecting pan123
+  Downloading https://pypi.tuna.tsinghua.edu.cn/packages/a9/29/2043db3b76609688fdcac80c679339909da2b581070731e6bfb896c348f6/pan123-1.0.3.2-py3-none-any.whl (13 kB)
+Installing collected packages: pan123
+Successfully installed pan123-1.0.3.2
