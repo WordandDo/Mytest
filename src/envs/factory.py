@@ -203,5 +203,12 @@ def _auto_register_builtin_environments():
     except ImportError:
         pass
 
+    # [新增] 注册搜索环境
+    try:
+        from .http_mcp_search_env import HttpMCPSearchEnv
+        register_environment("http_mcp_search", HttpMCPSearchEnv)
+    except ImportError:
+        pass
+
 # Auto-register on module import
 _auto_register_builtin_environments()

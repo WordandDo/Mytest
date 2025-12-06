@@ -19,7 +19,13 @@ from dataclasses import dataclass, field
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dotenv import load_dotenv
+# Optional dotenv support
+try:
+    from dotenv import load_dotenv
+    HAS_DOTENV = True
+except ImportError:
+    HAS_DOTENV = False
+
 from benchmark import Benchmark
 from envs.factory import get_environment_class
 
@@ -36,7 +42,7 @@ logger = logging.getLogger(__name__)
 # 预加载环境变量
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
-if os.path.exists(ENV_PATH):
+if HAS_DOTENV and os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
     logger.info(f"Loaded environment variables from {ENV_PATH}")
 

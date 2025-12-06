@@ -51,7 +51,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional, Union
 
-from envs.data_models import Observation, TrajectoryStep, TaskTrajectory
+from .data_models import Observation, TrajectoryStep, TaskTrajectory
 from prompts.system_prompts import get_system_prompt as load_system_prompt
 from tools.tool import Tool
 from utils.resource_manager import ResourceManager

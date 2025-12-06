@@ -1,20 +1,19 @@
 {
-  "server_name": "Hybrid Agent Gateway",
+  "server_name": "search_tools Agent Gateway",
   "port": 8080,
   "debug": true,
   "modules": [
     {
+      "//": "必需：系统基础工具（用于生命周期管理和状态获取）",
       "resource_type": "system",
       "tool_groups": ["system_resource"]
     },
     {
-      "resource_type": "vm_pyautogui",
+      "//": "新增：搜索工具组（无状态 Utility 类型）",
+      "resource_type": "utility",
       "tool_groups": [
-        "pyautogui_lifecycle",
-        "desktop_action_pyautogui",
-        "pyautogui_observation"
+        "search_tools"
       ]
     }
-    
   ]
 }

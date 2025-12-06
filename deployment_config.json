@@ -25,7 +25,7 @@
       }
     },
     "vm_pyautogui": {
-      "enabled": true,
+      "enabled": false,
       "implementation_class": "utils.resource_pools.vm_pool.VMPoolImpl",
       "config": {
         "num_vms": 2,

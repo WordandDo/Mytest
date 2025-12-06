@@ -9,15 +9,17 @@ from .data_models import (
     TaskTrajectory
 )
 
-# Import base Environment; Tool 源自 tools.tool 以保持和工具模块一致
-from .enviroment import Environment
-from tools.tool import Tool
-
 # Lazy imports for concrete environments to avoid tool dependency issues at import time
 # These will only be imported when actually used
 def __getattr__(name):
     """Lazy import for environment classes."""
-    if name == "MathEnvironment":
+    if name == "Environment":
+        from .enviroment import Environment
+        return Environment
+    elif name == "Tool":
+        from tools.tool import Tool
+        return Tool
+    elif name == "MathEnvironment":
         from .math_environment import MathEnvironment
         return MathEnvironment
     elif name == "create_math_environment":
