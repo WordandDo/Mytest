@@ -4,7 +4,7 @@ from typing import List, Dict, Optional
 from urllib.parse import quote
 from openai import OpenAI
 
-from config.settings import Config
+from .config.settings import Config
 
 
 class TextSearchService:
@@ -303,16 +303,6 @@ class TextSearchService:
                           llm_model: Optional[str] = None) -> List[List[Dict[str, str]]]:
         """
         Perform multiple text searches concurrently
-        
-        Args:
-            queries: List of search queries
-            k: Number of results per query
-            region: Search region
-            lang: Search language
-            llm_model: LLM model for summaries
-            
-        Returns:
-            List of search results for each query
         """
         tasks = [
             self.search_with_summaries(query, k, region, lang, llm_model)

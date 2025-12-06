@@ -3,11 +3,12 @@ import time
 import json
 import csv
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 from pan123 import Pan123
-from pan123.auth import get_access_token
 
-from config.settings import Config
+# 注意：这里需要确保 pan123 库已安装
+
+from .config.settings import Config
 
 
 class CloudStorageService:
@@ -77,8 +78,8 @@ class CloudStorageService:
             try:
                 # Run the blocking upload in a thread pool
                 result = await asyncio.to_thread(
-                    self.pan_client.oss.upload_new,
-                    self.config.PAN123_PARENT_FILE_ID,
+                    self.pan_client.file.upload,
+                    int(self.config.PAN123_PARENT_FILE_ID),
                     str(file_path)
                 )
                 
@@ -102,7 +103,7 @@ class CloudStorageService:
         raise RuntimeError(f"Upload permanently failed for {file_path} — last error: {last_error}")
     
     async def upload_multiple_images(self, file_paths: List[Path], 
-                                   progress_callback: Optional[callable] = None) -> List[Dict[str, str]]:
+                                   progress_callback: Optional[Callable] = None) -> List[Dict[str, str]]:
         """
         Upload multiple image files to cloud storage
         
@@ -141,11 +142,6 @@ class CloudStorageService:
                            json_path: Optional[Path] = None) -> None:
         """
         Save upload results to CSV and JSON files
-        
-        Args:
-            results: List of upload results
-            csv_path: Path to save CSV file (optional)
-            json_path: Path to save JSON file (optional)
         """
         if not csv_path:
             csv_path = self.config.LOGS_DIR / "upload_mapping.csv"

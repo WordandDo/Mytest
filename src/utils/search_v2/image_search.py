@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import List, Dict, Union
 from urllib.parse import quote
 
-from config.settings import Config
-from cloud_storage import CloudStorageService
+from .config.settings import Config
+from .cloud_storage import CloudStorageService
 
 
 class ImageSearchService:
@@ -43,12 +43,6 @@ class ImageSearchService:
     async def _prepare_image_url(self, image_input: Union[str, Path]) -> str:
         """
         Prepare image URL for search - upload local files if needed
-        
-        Args:
-            image_input: Either URL string or local file path
-            
-        Returns:
-            URL that can be used for reverse image search
         """
         if isinstance(image_input, str):
             # Check if it's a URL
@@ -81,14 +75,6 @@ class ImageSearchService:
     async def _search_by_url(self, session: aiohttp.ClientSession, image_url: str, k: int) -> List[Dict[str, str]]:
         """
         Perform reverse image search using SerpAPI with multiple engines
-        
-        Args:
-            session: aiohttp session
-            image_url: URL of the image to search
-            k: Number of results to return
-            
-        Returns:
-            List of search results
         """
         # Define search engines in order of preference
         engines = [
@@ -176,16 +162,7 @@ class ImageSearchService:
     
     async def batch_search_images(self, image_inputs: List[Union[str, Path]], 
                                 k: int = None) -> List[List[Dict[str, str]]]:
-        """
-        Search multiple images concurrently
-        
-        Args:
-            image_inputs: List of image URLs or file paths
-            k: Number of results per image
-            
-        Returns:
-            List of search results for each input image
-        """
+        """Search multiple images concurrently"""
         if k is None:
             k = self.config.DEFAULT_IMAGE_RESULTS
         
