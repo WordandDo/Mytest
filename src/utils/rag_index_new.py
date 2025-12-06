@@ -2054,15 +2054,12 @@ class RAGIndexLocal_faiss_compact(RAGIndexLocal_faiss):
         return instance
 
 
-def get_rag_index_class(use_faiss: bool = False, use_compact: bool = False, use_gainrag: bool = False):
+def get_rag_index_class(use_faiss: bool = False, use_compact: bool = False, use_hybrid: bool = False):
     """根据配置获取本地RAG索引类"""
-    if use_gainrag:
-        if not _GAINRAG_TRANSFORMERS_AVAILABLE or GainRAGContriever is None:
-            raise ImportError("未找到 transformers 依赖, 无法使用 GainRAGIndex")
-        if not _FAISS_AVAILABLE:
-            raise ImportError("faiss 未安装, 无法使用 GainRAGIndex")
-        print("✅ 使用 GainRAGIndex (Contriever + GainRAG 索引)")
-        return GainRAGIndex
+    # 优先使用混合检索模式
+    if use_hybrid:
+        print("✅ 使用 HybridRAGIndex (支持 BM25 + E5 混合检索)")
+        return HybridRAGIndex
 
     if not _SENTENCE_TRANSFORMERS_AVAILABLE:
         raise ImportError("sentence_transformers 未安装, 无法使用本地RAG索引")
@@ -2085,196 +2082,284 @@ def get_rag_index_class(use_faiss: bool = False, use_compact: bool = False, use_
     return RAGIndexLocal
 
 
-class GainRAGIndex(BaseRAGIndex):
-    """GainRAG 风格的索引, 复现 GainRAG 检索逻辑。"""
+# ============================================================================
+# DecEx-RAG Style Hybrid Index (BM25 + E5)
+# ============================================================================
 
-    DEFAULT_MODEL_NAME = "facebook/contriever"
+class DecExEncoder:
+    """
+    移植自 DecEx-RAG 的 Encoder，用于 E5/BGE 等模型的稠密检索
+    """
+    def __init__(self, model_name: str, model_path: str, device: str = "cuda"):
+        self.model_name = model_name
+        self.device = device
 
+        # 延迟导入以避免非 E5 场景的开销
+        try:
+            from transformers import AutoTokenizer, AutoModel
+        except ImportError:
+            raise ImportError("DecExEncoder 需要 transformers 库: pip install transformers")
+
+        print(f"[DecExEncoder] 正在加载模型: {model_path}")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
+        self.model.eval()
+        self.model.to(self.device)
+        print(f"[DecExEncoder] 模型加载完成，设备: {self.device}")
+
+    def encode(self, query_list: List[str], max_length: int = 512) -> np.ndarray:
+        if isinstance(query_list, str):
+            query_list = [query_list]
+
+        # E5 特有的 Instruction
+        if "e5" in self.model_name.lower():
+            query_list = [f"query: {q}" for q in query_list]
+
+        inputs = self.tokenizer(
+            query_list,
+            max_length=max_length,
+            padding=True,
+            truncation=True,
+            return_tensors="pt"
+        ).to(self.device)
+
+        with torch.no_grad():
+            output = self.model(**inputs)
+            # Mean Pooling
+            attention_mask = inputs['attention_mask']
+            last_hidden = output.last_hidden_state.masked_fill(
+                ~attention_mask[..., None].bool(), 0.0
+            )
+            embeddings = last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+            embeddings = torch.nn.functional.normalize(embeddings, dim=-1)
+
+        return embeddings.cpu().numpy().astype(np.float32)
+
+
+class BM25RAGIndex(BaseRAGIndex):
+    """
+    稀疏检索后端：封装 Pyserini BM25
+    """
+    def __init__(self, index_path: str, device: str = "cpu", **kwargs):
+        self.index_path = index_path
+        self.device = device
+
+        try:
+            from pyserini.search.lucene import LuceneSearcher
+        except ImportError:
+            raise ImportError("BM25RAGIndex 需要 pyserini 和 Java 环境: pip install pyserini")
+
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(f"BM25 索引路径不存在: {index_path}")
+
+        print(f"[BM25] 正在加载索引: {index_path}")
+        self.searcher = LuceneSearcher(self.index_path)
+        print("[BM25] 索引加载完成")
+
+    def query(self, query: str, top_k: int = 5, **kwargs) -> str:
+        """执行 BM25 检索"""
+        try:
+            hits = self.searcher.search(query, k=top_k)
+            results = []
+            for hit in hits:
+                raw_doc = self.searcher.doc(hit.docid).raw()
+                content_json = json.loads(raw_doc)
+                # 兼容 DecEx-RAG 语料格式
+                text = content_json.get('contents') or content_json.get('text', '')
+                title = content_json.get('title', '')
+                results.append(f"[{title}]\n{text}" if title else text)
+
+            if not results:
+                return "[查询结果] 未找到相关文档"
+
+            return "\n---\n".join(results)
+        except Exception as e:
+            return f"[BM25 Error] {str(e)}"
+
+    # 桩方法（BM25 索引由外部工具构建）
+    def build_index(self, *args, **kwargs):
+        raise NotImplementedError("BM25 索引需要使用 pyserini 工具离线构建")
+
+    def save_index(self, *args, **kwargs):
+        pass
+
+    def _store_embeddings(self, *args, **kwargs):
+        pass
+
+    def _finalize_embeddings(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def load_index(cls, index_path: str, **kwargs) -> "BM25RAGIndex":
+        return cls(index_path, **kwargs)
+
+
+class DenseE5RAGIndex(BaseRAGIndex):
+    """
+    密集检索后端：封装 Faiss + E5 Encoder
+    """
+    def __init__(self, index_path: str, model_name: str, corpus_path: str,
+                 device: str = "cuda", **kwargs):
+        self.device = device
+        self.model_name = model_name
+        self.corpus_path = corpus_path
+
+        if not _FAISS_AVAILABLE:
+            raise ImportError("DenseE5RAGIndex 需要 faiss: pip install faiss-gpu 或 faiss-cpu")
+
+        # 1. 加载 Faiss 索引
+        print(f"[E5] 正在加载 Faiss 索引: {index_path}")
+        self.index = faiss.read_index(index_path)
+
+        # 尝试迁移到 GPU
+        if "cuda" in device and hasattr(faiss, "StandardGpuResources"):
+            try:
+                res = faiss.StandardGpuResources()
+                self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+                print("[E5] Faiss 索引已迁移到 GPU")
+            except Exception as e:
+                print(f"[E5] GPU 迁移失败，使用 CPU: {e}")
+
+        # 2. 加载 Encoder
+        print(f"[E5] 正在初始化 Encoder: {model_name}")
+        self.encoder = DecExEncoder(model_name, model_path=model_name, device=device)
+
+        # 3. 加载语料库 (支持 JSONL)
+        print(f"[E5] 正在加载语料库: {corpus_path}")
+        self.corpus = []
+        with open(corpus_path, 'r', encoding='utf-8') as f:
+            for line in tqdm(f, desc="加载语料"):
+                if line.strip():
+                    self.corpus.append(json.loads(line))
+        print(f"[E5] 语料库加载完成，共 {len(self.corpus):,} 条")
+
+    def query(self, query: str, top_k: int = 5, **kwargs) -> str:
+        """执行稠密检索"""
+        try:
+            query_emb = self.encoder.encode([query])
+            scores, idxs = self.index.search(query_emb, k=top_k)
+
+            results = []
+            for idx in idxs[0]:
+                if idx == -1 or idx >= len(self.corpus):
+                    continue
+                doc = self.corpus[idx]
+                text = doc.get('contents') or doc.get('text', '')
+                title = doc.get('title', '')
+                results.append(f"[{title}]\n{text}" if title else text)
+
+            if not results:
+                return "[查询结果] 未找到相关文档"
+
+            return "\n---\n".join(results)
+        except Exception as e:
+            return f"[E5 Error] {str(e)}"
+
+    # 桩方法
+    def build_index(self, *args, **kwargs):
+        raise NotImplementedError("E5 索引需要使用专用脚本离线构建")
+
+    def save_index(self, *args, **kwargs):
+        pass
+
+    def _store_embeddings(self, *args, **kwargs):
+        pass
+
+    def _finalize_embeddings(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def load_index(cls, index_path: str, model_name: str, corpus_path: str, **kwargs) -> "DenseE5RAGIndex":
+        return cls(index_path, model_name, corpus_path, **kwargs)
+
+
+class HybridRAGIndex(BaseRAGIndex):
+    """
+    混合检索索引：支持 BM25 (sparse) 和 E5 (dense) 双模式
+    通过 search_type 参数在运行时选择检索方式
+    """
     def __init__(
         self,
-        model_name: str = DEFAULT_MODEL_NAME,
+        bm25_index_path: Optional[str] = None,
+        dense_index_path: Optional[str] = None,
+        dense_model_name: str = "intfloat/e5-base-v2",
+        corpus_path: Optional[str] = None,
         device: str = "cuda",
-        index_path: Optional[str] = None,
-        passages_path: Optional[str] = None,
-        use_gpu_index: bool = False,
-        gpu_id: int = 0,
-        query_batch_size: int = 64,
-        max_query_length: int = 512,
-    ) -> None:
-        if not _GAINRAG_TRANSFORMERS_AVAILABLE or GainRAGContriever is None:
-            raise ImportError("GainRAGIndex 需要安装 transformers 依赖 (AutoTokenizer/AutoConfig/BertModel)")
-        if not _FAISS_AVAILABLE:
-            raise ImportError("GainRAGIndex 需要 faiss 支持")
+        **kwargs
+    ):
+        """
+        Args:
+            bm25_index_path: BM25 索引路径（可选）
+            dense_index_path: Dense 索引路径（可选）
+            dense_model_name: Dense 模型名称
+            corpus_path: 语料库路径（Dense 索引必需）
+            device: 运行设备
+        """
+        self.bm25_index: Optional[BM25RAGIndex] = None
+        self.dense_index: Optional[DenseE5RAGIndex] = None
+        self.device = device
 
-        self.model_name = model_name or self.DEFAULT_MODEL_NAME
-        self.raw_device = device or "cuda"
-        self.device = self._resolve_device(self.raw_device)
-        self.torch_device = torch.device(self.device)
-        self.use_gpu_index = bool(use_gpu_index)
-        self.gpu_id = int(gpu_id)
-        self.query_batch_size = max(1, int(query_batch_size))
-        self.max_query_length = max(8, int(max_query_length))
-        self.index_path = index_path
-        self.passages_path = passages_path
+        # 懒加载：仅在需要时加载对应索引
+        self.bm25_index_path = bm25_index_path
+        self.dense_index_path = dense_index_path
+        self.dense_model_name = dense_model_name
+        self.corpus_path = corpus_path
 
-        self.faiss_index: Optional["faiss.Index"] = None
-        self.index_id_to_db_id: List[str] = []
-        self.passages_map: Dict[str, Dict[str, Any]] = {}
-        self.chunks: List[Dict[str, Any]] = []
-        self.vector_dim: Optional[int] = None
+        print("[HybridRAGIndex] 初始化完成（懒加载模式）")
+        print(f"  - BM25 路径: {bm25_index_path or '未配置'}")
+        print(f"  - Dense 路径: {dense_index_path or '未配置'}")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = GainRAGContriever.from_pretrained(self.model_name)
-        self.model.eval()
-        self.model.to(self.torch_device)
+    def _ensure_bm25_loaded(self):
+        """确保 BM25 索引已加载"""
+        if self.bm25_index is None:
+            if not self.bm25_index_path:
+                raise RuntimeError("BM25 索引路径未配置，无法执行稀疏检索")
+            print("[HybridRAGIndex] 首次使用，正在加载 BM25 索引...")
+            self.bm25_index = BM25RAGIndex.load_index(self.bm25_index_path)
 
-        if index_path:
-            self._load_index_files(index_path)
-        if passages_path:
-            self._load_passages(passages_path)
+    def _ensure_dense_loaded(self):
+        """确保 Dense 索引已加载"""
+        if self.dense_index is None:
+            if not self.dense_index_path or not self.corpus_path:
+                raise RuntimeError("Dense 索引路径或语料库路径未配置，无法执行稠密检索")
+            print("[HybridRAGIndex] 首次使用，正在加载 Dense 索引...")
+            self.dense_index = DenseE5RAGIndex.load_index(
+                index_path=self.dense_index_path,
+                model_name=self.dense_model_name,
+                corpus_path=self.corpus_path,
+                device=self.device
+            )
 
-    @staticmethod
-    def _resolve_device(device: str) -> str:
-        if device and device.lower().startswith("cuda") and torch.cuda.is_available():
-            return device
-        if device and device.lower().startswith("cpu"):
-            return "cpu"
-        if torch.cuda.is_available():
-            return "cuda"
-        return "cpu"
+    def query(self, query: str, top_k: int = 5, search_type: str = "dense") -> str:
+        """
+        执行混合检索
 
-    def _load_index_files(self, index_dir: str) -> None:
-        index_file = os.path.join(index_dir, "index.faiss")
-        meta_file = os.path.join(index_dir, "index_meta.faiss")
-
-        if not os.path.exists(index_file):
-            raise FileNotFoundError(f"未找到 GainRAG 索引文件: {index_file}")
-
-        cpu_index = faiss.read_index(index_file)
-
-        self.faiss_index = cpu_index
-        if self.use_gpu_index and hasattr(faiss, "StandardGpuResources"):
-            try:
-                num_gpus = faiss.get_num_gpus() if hasattr(faiss, "get_num_gpus") else 0
-                if num_gpus <= 0:
-                    print("⚠️ GainRAGIndex: 未检测到可用GPU, 回退到CPU索引")
-                    self.use_gpu_index = False
-                else:
-                    target_gpu = min(max(0, self.gpu_id), num_gpus - 1)
-                    resources = faiss.StandardGpuResources()
-                    self.faiss_index = faiss.index_cpu_to_gpu(resources, target_gpu, cpu_index)
-            except Exception as exc:  # pylint: disable=broad-except
-                print(f"⚠️ GainRAGIndex: 索引迁移到GPU失败({exc}), 回退到CPU索引")
-                self.faiss_index = cpu_index
-
-        if not os.path.exists(meta_file):
-            raise FileNotFoundError(f"未找到 GainRAG 索引映射文件: {meta_file}")
-        with open(meta_file, "rb") as reader:
-            mapping = pickle.load(reader)
-        self.index_id_to_db_id = [str(doc_id) for doc_id in mapping]
-        self.vector_dim = self.faiss_index.d if hasattr(self.faiss_index, "d") else None
-        self.index_path = index_dir
-
-    def _load_passages(self, path: str) -> None:
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"未找到 GainRAG passages 文件: {path}")
-
-        passages: List[Dict[str, Any]] = []
-        if path.endswith(".jsonl"):
-            with open(path, "r", encoding="utf-8") as fin:
-                for line in fin:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    passages.append(json.loads(line))
-        elif path.endswith(".json"):
-            with open(path, "r", encoding="utf-8") as fin:
-                data = json.load(fin)
-            if isinstance(data, dict):
-                candidates = data.get("passages") or data.get("items") or data.get("data")
-                if isinstance(candidates, list):
-                    passages = candidates
-                else:
-                    passages = [data]
-            elif isinstance(data, list):
-                passages = data
+        Args:
+            query: 查询字符串
+            top_k: 返回结果数
+            search_type: 检索类型 ("sparse" 或 "dense")
+        """
+        if search_type == "sparse":
+            self._ensure_bm25_loaded()
+            return self.bm25_index.query(query, top_k=top_k)
+        elif search_type == "dense":
+            self._ensure_dense_loaded()
+            return self.dense_index.query(query, top_k=top_k)
         else:
-            with open(path, "r", encoding="utf-8") as fin:
-                reader = csv.reader(fin, delimiter="\t")
-                for row in reader:
-                    if not row:
-                        continue
-                    if row[0] == "id":
-                        continue
-                    text = row[1] if len(row) > 1 else ""
-                    title = row[2] if len(row) > 2 else ""
-                    passages.append({"id": row[0], "title": title, "text": text})
+            raise ValueError(f"不支持的检索类型: {search_type}，仅支持 'sparse' 或 'dense'")
 
-        normalized: List[Dict[str, Any]] = []
-        self.passages_map = {}
-        for passage in passages:
-            if not isinstance(passage, dict):
-                continue
-            doc_id = str(passage.get("id") or passage.get("docid") or passage.get("doc_id") or len(normalized))
-            normalized_passage = dict(passage)
-            normalized_passage["id"] = doc_id
-            normalized_passage.setdefault("title", passage.get("title", ""))
-            normalized_passage.setdefault("text", passage.get("text", ""))
-            self.passages_map[doc_id] = normalized_passage
-            normalized.append(normalized_passage)
+    # 实现抽象方法（桩方法）
+    def build_index(self, *args, **kwargs):
+        raise NotImplementedError("HybridRAGIndex 不支持构建索引，请分别构建 BM25 和 Dense 索引")
 
-        if not normalized:
-            raise ValueError(f"未能从 {path} 解析出有效的 passages 数据")
+    def save_index(self, *args, **kwargs):
+        pass
 
-        self.chunks = normalized
-        self.passages_path = path
+    def _store_embeddings(self, *args, **kwargs):
+        pass
 
-    def _ensure_ready(self) -> None:
-        if self.faiss_index is None:
-            raise RuntimeError("GainRAGIndex: 索引尚未加载")
-        if not self.passages_map:
-            raise RuntimeError("GainRAGIndex: passages 尚未加载")
-
-    def _encode_queries(self, queries: List[str]) -> np.ndarray:
-        if not queries:
-            return np.zeros((0, self.vector_dim or 0), dtype=np.float32)
-
-        self.model.eval()
-        outputs: List[torch.Tensor] = []
-        with torch.no_grad():
-            for start in range(0, len(queries), self.query_batch_size):
-                batch = queries[start:start + self.query_batch_size]
-                encoded = self.tokenizer(
-                    batch,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.max_query_length,
-                )
-                encoded = {key: value.to(self.torch_device) for key, value in encoded.items()}
-                embeddings = self.model(**encoded)
-                outputs.append(embeddings.detach().cpu())
-
-        if not outputs:
-            return np.zeros((0, self.vector_dim or 0), dtype=np.float32)
-
-        matrix = torch.cat(outputs, dim=0).numpy().astype(np.float32)
-        if self.vector_dim is None and matrix.size > 0:
-            self.vector_dim = matrix.shape[1]
-        return matrix
-
-    def _store_embeddings(self, vectors: np.ndarray) -> None:  # type: ignore[override]
-        self._pending_embeddings = np.asarray(vectors, dtype=np.float32)
-
-    def _finalize_embeddings(self) -> None:  # type: ignore[override]
-        # GainRAGIndex 不在本类中构建索引, 因此无需额外处理
-        return
-
-    def build_index(self, *args, **kwargs) -> None:  # type: ignore[override]
-        raise NotImplementedError("GainRAGIndex 暂不支持在该仓库中直接构建索引, 请先离线生成GainRAG索引")
-
-    def save_index(self, index_path: str) -> None:  # type: ignore[override]
-        raise NotImplementedError("GainRAGIndex 暂不支持保存索引, 请使用 GainRAG 官方脚本")
+    def _finalize_embeddings(self, *args, **kwargs):
+        pass
 
     @classmethod
     def load_index(
@@ -2282,161 +2367,47 @@ class GainRAGIndex(BaseRAGIndex):
         index_path: str,
         model_name: Optional[str] = None,
         device: str = "cuda",
-        passages_path: Optional[str] = None,
-        use_gpu_index: bool = False,
-        gpu_id: int = 0,
-        query_batch_size: int = 64,
-        max_query_length: int = 512,
-        **kwargs: Any,
-    ) -> "GainRAGIndex":
-        if not index_path:
-            raise ValueError("GainRAGIndex.load_index 需要提供 index_path")
+        bm25_index_path: Optional[str] = None,
+        dense_index_path: Optional[str] = None,
+        corpus_path: Optional[str] = None,
+        **kwargs
+    ) -> "HybridRAGIndex":
+        """
+        加载混合索引
 
-        resolved_model = model_name or cls.DEFAULT_MODEL_NAME
+        Args:
+            index_path: 基础索引路径（可作为 Dense 索引路径）
+            model_name: Dense 模型名称
+            device: 运行设备
+            bm25_index_path: BM25 索引路径（可选，优先级高于 index_path/bm25）
+            dense_index_path: Dense 索引路径（可选，优先级高于 index_path）
+            corpus_path: 语料库路径（可选，优先级高于 index_path/corpus.jsonl）
+        """
+        # 参数优先级处理
+        final_bm25_path = bm25_index_path or os.path.join(index_path, "bm25")
+        final_dense_path = dense_index_path or index_path
+        final_corpus_path = corpus_path or os.path.join(index_path, "corpus.jsonl")
+        final_model_name = model_name or "intfloat/e5-base-v2"
 
-        resolved_passages = passages_path
-        if resolved_passages is None:
-            for candidate in ("passages.jsonl", "passages.json", "passages.csv"):
-                candidate_path = os.path.join(index_path, candidate)
-                if os.path.exists(candidate_path):
-                    resolved_passages = candidate_path
-                    break
-        if resolved_passages is None:
-            raise FileNotFoundError("GainRAGIndex 需要提供 passages 文件路径")
+        # 检查哪些索引可用
+        bm25_available = os.path.exists(final_bm25_path)
+        dense_available = os.path.exists(final_dense_path) and os.path.exists(final_corpus_path)
 
-        instance = cls(
-            model_name=resolved_model,
+        if not bm25_available and not dense_available:
+            raise FileNotFoundError(
+                f"未找到可用的索引:\n"
+                f"  - BM25: {final_bm25_path}\n"
+                f"  - Dense: {final_dense_path} + {final_corpus_path}"
+            )
+
+        return cls(
+            bm25_index_path=final_bm25_path if bm25_available else None,
+            dense_index_path=final_dense_path if dense_available else None,
+            dense_model_name=final_model_name,
+            corpus_path=final_corpus_path if dense_available else None,
             device=device,
-            index_path=index_path,
-            passages_path=resolved_passages,
-            use_gpu_index=use_gpu_index,
-            gpu_id=gpu_id,
-            query_batch_size=query_batch_size,
-            max_query_length=max_query_length,
+            **kwargs
         )
-        return instance
-
-    def query(self, query: str, top_k: int = 3) -> str:  # type: ignore[override]
-        if not isinstance(query, str) or not query.strip():
-            raise ValueError("查询文本不能为空")
-        self._ensure_ready()
-
-        sanitized_query = query.strip()
-        vectors = self._encode_queries([sanitized_query])
-        if vectors.size == 0:
-            return "[查询错误] 查询编码失败"
-
-        search_vectors = np.ascontiguousarray(vectors.astype(np.float32))
-        if search_vectors.ndim == 1:
-            search_vectors = search_vectors.reshape(1, -1)
-
-        k = max(1, int(top_k))
-        distances, indices = self.faiss_index.search(search_vectors, k)
-
-        retrieved_chunks: List[Dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for raw_idx in indices[0]:
-            idx = int(raw_idx)
-            if idx < 0 or idx >= len(self.index_id_to_db_id):
-                continue
-            doc_id = self.index_id_to_db_id[idx]
-            if doc_id in seen_ids:
-                continue
-            passage = self.passages_map.get(doc_id)
-            if passage is None:
-                continue
-            retrieved_chunks.append(passage)
-            seen_ids.add(doc_id)
-            if len(retrieved_chunks) >= k:
-                break
-
-        if not retrieved_chunks:
-            return "[查询错误] 未检索到有效的文本块"
-
-        formatted = [self._format_chunk_for_output(chunk) for chunk in retrieved_chunks]
-        context = "\n---\n".join(formatted)
-        return f"### Retrieved Context:\n{context}"
-
-
-# ============================================================================
-# GainRAG 相关模型
-# ============================================================================
-
-if BertModel is not None:
-
-    class GainRAGContriever(BertModel):
-        """Minimal Contriever implementation compatible with GainRAG indices."""
-
-        def __init__(self, config, pooling: str = "average", **kwargs):
-            super().__init__(config, add_pooling_layer=False)
-            if not hasattr(config, "pooling"):
-                self.config.pooling = pooling
-
-        def forward(
-            self,
-            input_ids: Optional[torch.LongTensor] = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            token_type_ids: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.Tensor] = None,
-            head_mask: Optional[torch.Tensor] = None,
-            inputs_embeds: Optional[torch.Tensor] = None,
-            encoder_hidden_states: Optional[torch.Tensor] = None,
-            encoder_attention_mask: Optional[torch.Tensor] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            normalize: bool = False,
-        ) -> torch.Tensor:
-            model_output = super().forward(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids,
-                position_ids=position_ids,
-                head_mask=head_mask,
-                inputs_embeds=inputs_embeds,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-            )
-
-            last_hidden = (
-                model_output.last_hidden_state
-                if hasattr(model_output, "last_hidden_state")
-                else model_output[0]
-            )
-
-            if attention_mask is None:
-                if input_ids is None:
-                    raise ValueError("GainRAGContriever 需要 attention_mask 或 input_ids")
-                attention_mask = (input_ids != 0).long()
-
-            mask = attention_mask[..., None].bool()
-            last_hidden = last_hidden.masked_fill(~mask, 0.0)
-
-            if getattr(self.config, "pooling", "average") == "average":
-                denom = attention_mask.sum(dim=1, keepdim=True).clamp(min=1)
-                emb = last_hidden.sum(dim=1) / denom
-            elif self.config.pooling == "sqrt":
-                denom = attention_mask.sum(dim=1, keepdim=True).float().clamp(min=1)
-                emb = last_hidden.sum(dim=1) / torch.sqrt(denom)
-            elif self.config.pooling == "cls":
-                emb = last_hidden[:, 0]
-            else:
-                emb = last_hidden.sum(dim=1)
-
-            if normalize:
-                emb = torch.nn.functional.normalize(emb, dim=-1)
-
-            return emb
-
-else:  # pragma: no cover - transformers 未安装时的兜底
-
-    GainRAGContriever = None  # type: ignore
-
-
-# ============================================================================
-# GainRAG 索引
-# ============================================================================
 
 
 

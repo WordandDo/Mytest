@@ -128,17 +128,62 @@ async def setup_rag_session(worker_id: str, config: str = "{}") -> str:
     })
 
 @ToolRegistry.register_tool("rag_query")
-async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] = None) -> str:
+async def query_knowledge_base_dense(worker_id: str, query: str, top_k: Optional[int] = None) -> str:
     """
-    Query the knowledge base using RAG (Direct Connection).
+    [Dense Search] Query the knowledge base using semantic vector search (E5/Contriever).
 
-    This tool performs semantic search on the allocated knowledge base resources.
+    This tool performs semantic search using dense embeddings. Use this when you need to:
+    - Understand the meaning of queries
+    - Perform concept-based searches
+    - Handle natural language questions
+    - Find semantically similar content
+
     Top-k parameter follows priority: Agent explicit value > Task config > Backend default.
 
     Args:
         worker_id: Unique worker identifier
         query: The query string to search for
         top_k: Optional number of top results to return (overrides task config)
+
+    Returns:
+        JSON string with query results
+    """
+    return await _internal_query(worker_id, query, top_k, search_type="dense")
+
+
+@ToolRegistry.register_tool("rag_query_sparse")
+async def query_knowledge_base_sparse(worker_id: str, query: str, top_k: Optional[int] = None) -> str:
+    """
+    [Sparse Search] Query the knowledge base using keyword matching (BM25).
+
+    This tool performs keyword-based search using sparse retrieval. Use this when you need to:
+    - Match specific terms or names exactly
+    - Search for IDs or codes
+    - Find exact phrase matches
+    - When semantic search is ambiguous
+
+    Top-k parameter follows priority: Agent explicit value > Task config > Backend default.
+
+    Args:
+        worker_id: Unique worker identifier
+        query: The query string to search for
+        top_k: Optional number of top results to return (overrides task config)
+
+    Returns:
+        JSON string with query results
+    """
+    return await _internal_query(worker_id, query, top_k, search_type="sparse")
+
+
+async def _internal_query(worker_id: str, query: str, top_k: Optional[int], search_type: str) -> str:
+    """
+    Internal unified query logic for both dense and sparse search.
+
+    Args:
+        worker_id: Unique worker identifier
+        query: The query string to search for
+        top_k: Optional number of top results to return
+        search_type: Search type ("dense" or "sparse")
 
     Returns:
         JSON string with query results
@@ -154,10 +199,6 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] 
         return json.dumps({"status": "error", "message": "Query cannot be empty"})
 
     # Determine effective top_k with priority: Agent > Task Config > Backend Default
-    # 1. If Agent explicitly passed a value, use it (highest priority)
-    # 2. If not, use Task config top_k stored in session (from setup_rag_session)
-    # 3. If neither exists, pass None to backend, triggering backend's default_top_k from deployment_config.json
-
     task_config_top_k = session.get("config_top_k") if session else None
 
     if top_k is not None:
@@ -171,14 +212,15 @@ async def query_knowledge_base(worker_id: str, query: str, top_k: Optional[int] 
 
     try:
         async with httpx.AsyncClient() as client:
-            logger.info(f"[{worker_id}] Querying RAG service at {target_url}/query with top_k={effective_top_k}...")
+            logger.info(f"[{worker_id}] Querying RAG service ({search_type}) at {target_url}/query with top_k={effective_top_k}...")
             # POST directly to RAG Service
             resp = await client.post(
                 f"{target_url}/query",
                 json={
                     "query": query,
                     "top_k": effective_top_k if effective_top_k else 5,  # Ensure integer is passed to backend
-                    "token": session.get("token", "")
+                    "token": session.get("token", ""),
+                    "search_type": search_type  # Pass search type to backend
                 },
                 timeout=120
             )

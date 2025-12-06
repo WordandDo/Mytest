@@ -57,8 +57,36 @@
         "use_gpu_index": true,
         "gpu_id": 0,
         "default_top_k": 10,
-        
+
         "server_start_retries": 600
+      }
+    },
+    "rag_hybrid": {
+      "enabled": false,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 50,
+        "rag_index_path": "/path/to/hybrid_index",
+        "rag_model_name": "intfloat/e5-base-v2",
+
+        "use_hybrid": true,
+        "bm25_index_path": "/path/to/bm25_index",
+        "dense_index_path": "/path/to/dense_index/e5_Flat.index",
+        "corpus_path": "/path/to/corpus.jsonl",
+
+        "embedding_device": "cuda",
+        "use_gpu_index": true,
+        "default_top_k": 10,
+
+        "server_start_retries": 600,
+
+        "_comment": "Hybrid RAG 配置说明:",
+        "_comment_1": "- use_hybrid: 启用混合检索模式（BM25 + E5）",
+        "_comment_2": "- bm25_index_path: BM25 索引路径（使用 pyserini 构建）",
+        "_comment_3": "- dense_index_path: Dense 索引路径（Faiss 索引文件）",
+        "_comment_4": "- corpus_path: 原始语料库路径（JSONL 格式，Dense 检索需要）",
+        "_comment_5": "- rag_model_name: Dense 检索使用的模型（如 intfloat/e5-base-v2）",
+        "_comment_6": "- 默认使用 Dense 检索，可通过 search_type 参数切换到 Sparse"
       }
     }
   }

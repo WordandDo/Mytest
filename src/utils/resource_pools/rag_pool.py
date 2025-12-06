@@ -63,8 +63,9 @@ def kill_port_process(port: int):
 class QueryRequest(BaseModel):
     query: str
     # [修改] 这里设为 Optional，如果为 None 则使用 SERVER_CONFIG 中的值
-    top_k: Optional[int] = None 
+    top_k: Optional[int] = None
     token: Optional[str] = None
+    search_type: str = "dense"  # 新增：检索类型，支持 "sparse" 或 "dense"
 
 @rag_server_app.post("/query")
 async def api_query_index(request: QueryRequest):
@@ -73,8 +74,13 @@ async def api_query_index(request: QueryRequest):
     try:
         # [关键逻辑] 优先使用请求参数 -> 其次使用配置文件 -> 最后兜底 5
         effective_k = request.top_k if request.top_k is not None else SERVER_CONFIG["default_top_k"]
-        
-        results = rag_index_instance.query(request.query, top_k=effective_k)
+
+        # [新增] 传递 search_type 参数给索引的 query 方法
+        results = rag_index_instance.query(
+            request.query,
+            top_k=effective_k,
+            search_type=request.search_type
+        )
         return {"status": "success", "results": results}
     except Exception as e:
         logger.error(f"RAG Query Error: {e}")
@@ -126,8 +132,8 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         use_gpu_index = parse_bool("use_gpu_index", False)
         # [新增] 紧凑型索引开关
         use_compact = parse_bool("use_compact", False)
-        # [新增] GainRAG 开关
-        use_gainrag = parse_bool("use_gainrag", False)
+        # [新增] 混合检索开关（替代 GainRAG）
+        use_hybrid = parse_bool("use_hybrid", False)
 
         # ==========================================
         # [适配点 3] 提取高级参数
@@ -148,9 +154,10 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         target_bytes = config.get("target_bytes_per_vector")
         target_bytes = int(target_bytes) if target_bytes else None
 
-        # [新增] GainRAG 特定参数
-        passages_path = config.get("passages_path") # GainRAG 必须提供
-        gpu_id = int(config.get("gpu_id", 0))
+        # [新增] Hybrid 混合检索特定参数
+        bm25_index_path = config.get("bm25_index_path")  # BM25 索引路径
+        dense_index_path = config.get("dense_index_path")  # Dense 索引路径（可选，默认用 index_path）
+        corpus_path = config.get("corpus_path")  # 语料库路径（Dense 必需）
 
         # ==========================================
         # [适配点 4] 调用新的工厂函数
@@ -159,7 +166,7 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         IndexClass = get_rag_index_class(
             use_faiss=use_faiss,
             use_compact=use_compact,
-            use_gainrag=use_gainrag
+            use_hybrid=use_hybrid
         )
         server_logger.info(f"Selected Index Class: {IndexClass.__name__}")
 
@@ -174,7 +181,7 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         }
 
         # 针对 Faiss 体系的参数注入
-        if "faiss" in IndexClass.__name__.lower() or use_gainrag:
+        if "faiss" in IndexClass.__name__.lower():
             common_kwargs["use_gpu_index"] = use_gpu_index
             if gpu_parallel_degree:
                 common_kwargs["gpu_parallel_degree"] = gpu_parallel_degree
@@ -186,20 +193,22 @@ def start_rag_server(port: int, config: Dict[str, Any]):
             # 开启内存映射以减少内存占用
             common_kwargs["memory_map"] = True
 
-        # 针对 GainRAG 的参数注入
-        if use_gainrag:
-            common_kwargs["gpu_id"] = gpu_id
-            if passages_path:
-                common_kwargs["passages_path"] = passages_path
+        # 针对 Hybrid 索引的参数注入
+        if use_hybrid:
+            if bm25_index_path:
+                common_kwargs["bm25_index_path"] = bm25_index_path
+            if dense_index_path:
+                common_kwargs["dense_index_path"] = dense_index_path
+            if corpus_path:
+                common_kwargs["corpus_path"] = corpus_path
 
         # ==========================================
         # [适配点 6] 加载或构建逻辑
         # ==========================================
-        # 检查是否存在 metadata.json (标准 RAG) 或 index.faiss (GainRAG)
+        # 检查是否存在 metadata.json (标准 RAG)
         has_metadata = index_path and os.path.exists(os.path.join(index_path, "metadata.json"))
-        has_gainrag_index = index_path and os.path.exists(os.path.join(index_path, "index.faiss"))
 
-        should_load = has_metadata or (use_gainrag and has_gainrag_index)
+        should_load = has_metadata or use_hybrid  # Hybrid 模式总是使用懒加载
 
         if should_load:
             server_logger.info(f"Loading existing index from {index_path}...")
@@ -209,12 +218,11 @@ def start_rag_server(port: int, config: Dict[str, Any]):
                 **common_kwargs
             )
         else:
-            if use_gainrag:
-                raise RuntimeError("GainRAGIndex does not support online building. Please provide a valid index_path.")
+            if use_hybrid:
+                raise RuntimeError("HybridRAGIndex 需要预先构建的 BM25 和 Dense 索引")
 
             server_logger.info(f"Building new index from {kb_path}...")
             # 实例化对象
-            # 注意：GainRAGIndex 不会走这里
             rag_index_instance = IndexClass(**common_kwargs)
 
             # 触发构建
