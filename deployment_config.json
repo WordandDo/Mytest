@@ -75,10 +75,10 @@
         "corpus_path": "/home/a1/sdb/wikidata4rag/Search-r1/data00/jiajie_jin/flashrag_indexes/wiki_dpr_100w/wiki_dump.jsonl",
 
         "embedding_device": "cuda",
-        "use_gpu_index": true,
+        "use_gpu_index": false,
         "default_top_k": 10,
 
-        "server_start_retries": 600,
+        "server_start_retries": 900,
 
         "_comment": "Hybrid RAG 配置说明:",
         "_comment_1": "- use_hybrid: 启用混合检索模式（BM25 + E5）",

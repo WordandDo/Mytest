@@ -5,6 +5,7 @@ import sys
 import time
 import uuid
 import multiprocessing
+import threading
 import uvicorn
 import traceback
 import signal
@@ -34,6 +35,14 @@ rag_index_instance: Optional[BaseRAGIndex] = None
 # [新增] 全局配置对象，用于存储从 deployment_config 传来的默认值
 SERVER_CONFIG = {
     "default_top_k": 5  # 默认兜底
+}
+
+# --- 全局状态管理 ---
+loading_state = {
+    "status": "initializing",
+    "ready": False,
+    "error": None,
+    "progress": "Starting..."
 }
 
 def kill_port_process(port: int):
@@ -88,7 +97,31 @@ async def api_query_index(request: QueryRequest):
 
 @rag_server_app.get("/health")
 async def health_check():
-    return {"status": "ok", "ready": rag_index_instance is not None}
+    """
+    严格的健康检查：只有当后台完全加载完毕(ready=True)时才返回 ok
+    """
+    if loading_state["error"]:
+        # 如果后台崩了，直接报错
+        return {
+            "status": "error",
+            "ready": False,
+            "detail": loading_state["error"]
+        }
+
+    if loading_state["ready"]:
+        # 只有这里才返回 True
+        return {
+            "status": "ok",
+            "ready": True,
+            "detail": "Service is fully ready"
+        }
+
+    # 否则一直返回 False，让脚本继续转圈等待
+    return {
+        "status": "loading",
+        "ready": False,
+        "detail": loading_state["progress"]
+    }
 
 def start_rag_server(port: int, config: Dict[str, Any]):
     """
@@ -108,20 +141,35 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         SERVER_CONFIG["default_top_k"] = int(config["default_top_k"])
         server_logger.info(f"Configured default_top_k = {SERVER_CONFIG['default_top_k']}")
 
-    # 4. 加载索引
+    # 4. 启动后台线程加载索引
+    loader_thread = threading.Thread(
+        target=_background_load_index, 
+        args=(config.copy(),), 
+        daemon=True
+    )
+    loader_thread.start()
+
+    # 5. 立即启动 uvicorn
+    uvicorn.run(rag_server_app, host="0.0.0.0", port=port, log_level="warning")
+
+
+def _background_load_index(config: Dict[str, Any]):
+    """
+    [后台线程] 异步加载 RAG 索引，并在完成后设置全局实例。
+    对 HybridRAGIndex 类型会执行 warmup() 预热。
+    """
     global rag_index_instance
     try:
-        # ==========================================
-        # [适配点 1] 提取基础路径配置
-        # ==========================================
+        logging.info("🧵 [Background] Starting index loading logic...")
+        loading_state["progress"] = "Loading configuration..."
+
+        # 提取基础路径配置
         kb_path = config.get("rag_kb_path", "")
         index_path = config.get("rag_index_path", "")
         model_name = config.get("rag_model_name", "sentence-transformers/all-MiniLM-L6-v2")
         device = config.get("embedding_device", "cpu")
 
-        # ==========================================
-        # [适配点 2] 提取类型开关 (Boolean)
-        # ==========================================
+        # 提取类型开关 (Boolean)
         def parse_bool(key, default=False):
             val = config.get(key, default)
             if isinstance(val, str):
@@ -135,9 +183,7 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         # [新增] 混合检索开关（替代 GainRAG）
         use_hybrid = parse_bool("use_hybrid", False)
 
-        # ==========================================
-        # [适配点 3] 提取高级参数
-        # ==========================================
+        # 提取高级参数
         # [新增] GPU 并行度
         gpu_parallel_degree = config.get("gpu_parallel_degree")
         if gpu_parallel_degree:
@@ -159,21 +205,15 @@ def start_rag_server(port: int, config: Dict[str, Any]):
         dense_index_path = config.get("dense_index_path")  # Dense 索引路径（可选，默认用 index_path）
         corpus_path = config.get("corpus_path")  # 语料库路径（Dense 必需）
 
-        # ==========================================
-        # [适配点 4] 调用新的工厂函数
-        # ==========================================
-        # 工厂函数现在接收更多参数来决定返回哪个类
+        # 调用新的工厂函数
         IndexClass = get_rag_index_class(
             use_faiss=use_faiss,
             use_compact=use_compact,
             use_hybrid=use_hybrid
         )
-        server_logger.info(f"Selected Index Class: {IndexClass.__name__}")
+        logging.info(f"Selected Index Class: {IndexClass.__name__}")
 
-        # ==========================================
-        # [适配点 5] 构建通用参数字典
-        # ==========================================
-        # 这些参数在 load_index 和 __init__ 中大多是通用的
+        # 构建通用参数字典
         common_kwargs = {
             "model_name": model_name,
             "device": device,
@@ -202,50 +242,62 @@ def start_rag_server(port: int, config: Dict[str, Any]):
             if corpus_path:
                 common_kwargs["corpus_path"] = corpus_path
 
-        # ==========================================
-        # [适配点 6] 加载或构建逻辑
-        # ==========================================
         # 检查是否存在 metadata.json (标准 RAG)
         has_metadata = index_path and os.path.exists(os.path.join(index_path, "metadata.json"))
 
         should_load = has_metadata or use_hybrid  # Hybrid 模式总是使用懒加载
 
-        if should_load:
-            server_logger.info(f"Loading existing index from {index_path}...")
-            # 调用 load_index 类方法
-            rag_index_instance = IndexClass.load_index(
-                index_path=index_path,
-                **common_kwargs
-            )
+        # === 核心修改点：加载索引并调用 warmup ===
+        if "Hybrid" in IndexClass.__name__:
+            loading_state["progress"] = "Loading Hybrid Index components..."
+            logging.info("⚡ Detected HybridRAGIndex, starting instantiation...")
+
+            # 1. 实例化 (此时是懒加载，还没真正读文件)
+            rag_index_instance = IndexClass.load_index(index_path=index_path, **common_kwargs)
+
+            # 2. 调用 warmup 方法预热整个索引
+            # 在这行执行完之前，loading_state["ready"] 依然是 False
+            loading_state["progress"] = "Warming up Hybrid Index (this may take several minutes)..."
+            rag_index_instance.warmup()
+
         else:
-            if use_hybrid:
-                raise RuntimeError("HybridRAGIndex 需要预先构建的 BM25 和 Dense 索引")
+            # 常规索引的加载逻辑
+            if should_load:
+                loading_state["progress"] = f"Loading existing index from {index_path}..."
+                logging.info(f"Loading existing index from {index_path}...")
+                rag_index_instance = IndexClass.load_index(
+                    index_path=index_path,
+                    **common_kwargs
+                )
+            else:
+                if use_hybrid:
+                    raise RuntimeError("HybridRAGIndex 需要预先构建的 BM25 和 Dense 索引")
 
-            server_logger.info(f"Building new index from {kb_path}...")
-            # 实例化对象
-            rag_index_instance = IndexClass(**common_kwargs)
+                loading_state["progress"] = f"Building new index from {kb_path}..."
+                logging.info(f"Building new index from {kb_path}...")
+                rag_index_instance = IndexClass(**common_kwargs)
+                rag_index_instance.build_index(
+                    file_path=kb_path,
+                    num_workers=0
+                )
 
-            # 触发构建
-            # 可以在这里根据文件大小自动决定是否使用 build_index_streaming
-            # 简单起见，这里演示标准构建，但传入 num_workers 以利用新代码的多进程能力
-            rag_index_instance.build_index(
-                file_path=kb_path,
-                num_workers=0 # 0 表示自动利用 CPU 核心数
-            )
+                if index_path:
+                    rag_index_instance.save_index(index_path)
 
-            if index_path:
-                rag_index_instance.save_index(index_path)
-
-        server_logger.info("✅ Index loaded successfully.")
+        # === 只有代码跑到这里，才宣布就绪 ===
+        logging.info("✅ Index loading and warmup COMPLETED.")
+        loading_state["ready"] = True
+        loading_state["status"] = "ok"
+        loading_state["progress"] = "Done"
 
     except Exception as e:
-        server_logger.error(f"Failed to load index: {e}")
-        traceback.print_exc()
-        # 如果加载失败，子进程应该退出，以便 Pool 能够检测到并处理（或者留在那里让用户通过 health check 发现）
+        error_msg = str(e)
+        logging.critical(f"❌ [Background] Critical failure: {error_msg}", exc_info=True)
+        loading_state["ready"] = False
+        loading_state["status"] = "error"
+        loading_state["error"] = error_msg
+        # 如果加载失败，子进程应该退出
         sys.exit(1)
-
-    # 5. 启动 uvicorn
-    uvicorn.run(rag_server_app, host="0.0.0.0", port=port, log_level="warning")
 
 # =========================================================================
 # [Pool Manager] 资源池管理逻辑

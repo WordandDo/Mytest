@@ -2207,31 +2207,62 @@ class DenseE5RAGIndex(BaseRAGIndex):
         if not _FAISS_AVAILABLE:
             raise ImportError("DenseE5RAGIndex 需要 faiss: pip install faiss-gpu 或 faiss-cpu")
 
-        # 1. 加载 Faiss 索引
-        print(f"[E5] 正在加载 Faiss 索引: {index_path}")
-        self.index = faiss.read_index(index_path)
-
-        # 尝试迁移到 GPU
-        if "cuda" in device and hasattr(faiss, "StandardGpuResources"):
-            try:
-                res = faiss.StandardGpuResources()
-                self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
-                print("[E5] Faiss 索引已迁移到 GPU")
-            except Exception as e:
-                print(f"[E5] GPU 迁移失败，使用 CPU: {e}")
-
-        # 2. 加载 Encoder
+        print(f"[E5] 正在加载 Faiss 索引 (Memory Map 模式): {index_path}")
+        
+        # 1. 尝试使用内存映射 (mmap) 加载，极大降低内存占用
+        try:
+            # IO_FLAG_MMAP | IO_FLAG_READ_ONLY
+            io_flags = faiss.IO_FLAG_MMAP | faiss.IO_FLAG_READ_ONLY
+            self.index = faiss.read_index(index_path, io_flags)
+            print("[E5] 成功启用 Memory Mapping (mmap)，索引将按需读取")
+        except Exception as e:
+            print(f"[E5] mmap 加载失败，回退到普通加载: {e}")
+            self.index = faiss.read_index(index_path)
+        
+        # 2. 对于 60GB 索引，强烈建议不要尝试迁移到单卡 GPU
+        # 除非您拥有 80GB 显存的 A100，否则下面的代码会导致 OOM
+        # 建议在配置中设置 use_gpu_index: false，或者在此处增加判断
+        
+        # 仅当索引小于 20GB 时才尝试 GPU 加载（示例保护逻辑）
+        index_size_gb = os.path.getsize(index_path) / (1024**3)
+        if "cuda" in device and hasattr(faiss, "StandardGpuResources") and kwargs.get("use_gpu_index", False):
+            if index_size_gb < 20: # 假设显存阈值
+                 try:
+                    res = faiss.StandardGpuResources()
+                    self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+                    print("[E5] Faiss 索引已迁移到 GPU")
+                 except Exception as e:
+                    print(f"[E5] GPU 迁移失败 (可能显存不足)，继续使用 CPU: {e}")
+            else:
+                 print(f"[E5] 索引过大 ({index_size_gb:.1f}GB)，跳过 GPU 加载以防 OOM")
+        
+        # 3. 加载 Encoder
         print(f"[E5] 正在初始化 Encoder: {model_name}")
         self.encoder = DecExEncoder(model_name, model_path=model_name, device=device)
 
-        # 3. 加载语料库 (支持 JSONL)
+        # 4. 加载语料库 (支持 JSONL + 磁盘懒加载)
         print(f"[E5] 正在加载语料库: {corpus_path}")
-        self.corpus = []
-        with open(corpus_path, 'r', encoding='utf-8') as f:
-            for line in tqdm(f, desc="加载语料"):
-                if line.strip():
-                    self.corpus.append(json.loads(line))
-        print(f"[E5] 语料库加载完成，共 {len(self.corpus):,} 条")
+
+        # 检测 .offsets 文件是否存在
+        offset_path = corpus_path[:-6] + ".offsets" if corpus_path.endswith('.jsonl') else corpus_path + ".offsets"
+
+        if os.path.exists(offset_path):
+            # 使用磁盘懒加载模式
+            print(f"✓ 检测到偏移量索引: {offset_path}")
+            print(f"  → 使用 DiskBasedChunks (磁盘懒加载模式)")
+            self.corpus = DiskBasedChunks(corpus_path, offset_path)
+            print(f"[E5] 语料库索引加载完成，共 {len(self.corpus):,} 条 (懒加载，未占用内存)")
+        else:
+            # 回退到全量内存加载
+            print(f"⚠️  未找到偏移量索引文件: {offset_path}")
+            print(f"  → 将全量加载到内存 (可能占用大量内存)")
+            print(f"  💡 提示: 运行 `python scripts/generate_offsets.py {corpus_path}` 生成索引以启用懒加载")
+            self.corpus = []
+            with open(corpus_path, 'r', encoding='utf-8') as f:
+                for line in tqdm(f, desc="加载语料"):
+                    if line.strip():
+                        self.corpus.append(json.loads(line))
+            print(f"[E5] 语料库加载完成，共 {len(self.corpus):,} 条")
 
     def query(self, query: str, top_k: int = 5, **kwargs) -> str:
         """执行稠密检索"""
@@ -2276,7 +2307,7 @@ class DenseE5RAGIndex(BaseRAGIndex):
 class HybridRAGIndex(BaseRAGIndex):
     """
     混合检索索引：支持 BM25 (sparse) 和 E5 (dense) 双模式
-    通过 search_type 参数在运行时选择检索方式
+    支持启动时预热 (Warmup) 和进度展示
     """
     def __init__(
         self,
@@ -2299,30 +2330,66 @@ class HybridRAGIndex(BaseRAGIndex):
         self.dense_index: Optional[DenseE5RAGIndex] = None
         self.device = device
 
-        # 懒加载：仅在需要时加载对应索引
+        # 懒加载配置
         self.bm25_index_path = bm25_index_path
         self.dense_index_path = dense_index_path
         self.dense_model_name = dense_model_name
         self.corpus_path = corpus_path
 
-        print("[HybridRAGIndex] 初始化完成（懒加载模式）")
+        print("[HybridRAGIndex] 初始化完成（等待预热）")
         print(f"  - BM25 路径: {bm25_index_path or '未配置'}")
         print(f"  - Dense 路径: {dense_index_path or '未配置'}")
+
+    def warmup(self):
+        """
+        [新增] 显式预热方法：强制加载所有索引组件
+        带有进度条显示，用于启动阶段
+        """
+        print(f"\n{'='*50}")
+        print(f"🔥 [Hybrid] 开始全量预热 (Full Warmup)")
+        print(f"{'='*50}")
+
+        # 定义预热步骤
+        steps = []
+        if self.bm25_index_path:
+            steps.append("bm25")
+        if self.dense_index_path:
+            steps.append("dense")
+        
+        # 使用 tqdm 展示总体进度
+        with tqdm(total=len(steps), desc="Hybrid Components Ready", unit="module") as pbar:
+            
+            # 1. 加载 BM25
+            if "bm25" in steps:
+                pbar.set_postfix_str("Loading BM25 Index...")
+                self._ensure_bm25_loaded()
+                pbar.update(1)
+            
+            # 2. 加载 Dense (Faiss + Encoder + Corpus)
+            if "dense" in steps:
+                pbar.set_postfix_str("Loading Dense Index & Models...")
+                # _ensure_dense_loaded 内部会初始化 DenseE5RAGIndex，
+                # 而 DenseE5RAGIndex 内部加载语料时已经自带了 tqdm，这里会形成嵌套进度条，效果很好
+                self._ensure_dense_loaded()
+                pbar.update(1)
+        
+        print(f"\n✅ [Hybrid] 预热完成，所有索引已加载进内存。\n")
 
     def _ensure_bm25_loaded(self):
         """确保 BM25 索引已加载"""
         if self.bm25_index is None:
             if not self.bm25_index_path:
-                raise RuntimeError("BM25 索引路径未配置，无法执行稀疏检索")
-            print("[HybridRAGIndex] 首次使用，正在加载 BM25 索引...")
+                return
+            print(f"  ➜ Loading BM25 from: {self.bm25_index_path}")
             self.bm25_index = BM25RAGIndex.load_index(self.bm25_index_path)
 
     def _ensure_dense_loaded(self):
         """确保 Dense 索引已加载"""
         if self.dense_index is None:
             if not self.dense_index_path or not self.corpus_path:
-                raise RuntimeError("Dense 索引路径或语料库路径未配置，无法执行稠密检索")
-            print("[HybridRAGIndex] 首次使用，正在加载 Dense 索引...")
+                return
+            print(f"  ➜ Loading Dense Index from: {self.dense_index_path}")
+            # 这里会触发 DenseE5RAGIndex 的初始化，包含 Faiss 加载和语料库读取
             self.dense_index = DenseE5RAGIndex.load_index(
                 index_path=self.dense_index_path,
                 model_name=self.dense_model_name,
@@ -2339,6 +2406,7 @@ class HybridRAGIndex(BaseRAGIndex):
             top_k: 返回结果数
             search_type: 检索类型 ("sparse" 或 "dense")
         """
+        # 保持原有的自动加载逻辑，防止未预热直接调用报错
         if search_type == "sparse":
             self._ensure_bm25_loaded()
             return self.bm25_index.query(query, top_k=top_k)

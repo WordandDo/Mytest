@@ -5,7 +5,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 # 配置参数
 RESOURCE_PORT=8000
 RAG_SERVICE_PORT=8001
-MAX_WAIT_TIME=600  # 最大等待时间（秒）
+MAX_WAIT_TIME=900  # 最大等待时间（秒）
 HEALTH_CHECK_INTERVAL=2  # 健康检查间隔（秒）
 
 # 颜色输出

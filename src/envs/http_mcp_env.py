@@ -673,7 +673,7 @@ class HttpMCPEnv:
 
         try:
             if not self.active_resources:
-                 logger.warning(f"[{worker_id}] No allocatable resources found (system filtered). Skipping allocation.")
+                 logger.info(f"[{worker_id}] Running in stateless mode (no heavy resources required). Initializing tools only.")
                  # 即使没有需要分配的资源，也调用获取观察值，因为可能有无状态工具可用
                  self.get_inital_obs()
                  return True

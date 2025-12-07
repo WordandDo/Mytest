@@ -1,5 +1,8 @@
 import asyncio
 import aiohttp
+import base64
+import uuid
+import time
 from pathlib import Path
 from typing import List, Dict, Union
 from urllib.parse import quote
@@ -42,35 +45,71 @@ class ImageSearchService:
     
     async def _prepare_image_url(self, image_input: Union[str, Path]) -> str:
         """
-        Prepare image URL for search - upload local files if needed
+        Prepare image URL for search - handle URL, Base64, or local files
         """
+        # =================================================================
+        # 1. Handle String Input (URL or Base64)
+        # =================================================================
         if isinstance(image_input, str):
-            # Check if it's a URL
-            if image_input.startswith(('http://', 'https://')):
-                print(f"[INFO] Using provided URL: {image_input}")
+            # --- Case A: Base64 String ---
+            if image_input.startswith("data:image"):
+                try:
+                    # 1. 解析 Base64 头，提取扩展名
+                    if "," in image_input:
+                        header, encoded = image_input.split(",", 1)
+                        # header 格式如: data:image/png;base64
+                        file_ext = header.split(";")[0].split("/")[1]
+                    else:
+                        raise ValueError("Invalid Base64 format: missing header")
+
+                    # 2. 使用专用的 cache 目录
+                    filename = f"b64_search_{int(time.time())}_{uuid.uuid4().hex[:6]}.{file_ext}"
+                    cache_path = self.config.SEARCH_CACHE_DIR / filename
+
+                    # 3. 解码并保存到缓存文件
+                    with open(cache_path, "wb") as f:
+                        f.write(base64.b64decode(encoded))
+
+                    try:
+                        # 4. 上传到云端
+                        print(f"[INFO] Auto-uploading Base64 image: {filename}")
+                        upload_result = await self.cloud_storage.upload_single_image(cache_path)
+                        return upload_result['url']
+                    finally:
+                        # 5. 缓存清理控制
+                        if not self.config.KEEP_LOCAL_CACHE:
+                            if cache_path.exists():
+                                cache_path.unlink()
+                        else:
+                            print(f"[DEBUG] Kept Base64 cache: {filename}")
+
+                except Exception as e:
+                    raise ValueError(f"Base64 processing failed: {e}")
+
+            # --- Case B: HTTP/HTTPS URL ---
+            elif image_input.startswith(('http://', 'https://')):
                 return image_input
+
+            # --- Case C: Local File Path (String format) ---
             else:
-                # Treat as file path
                 image_input = Path(image_input)
-        
+
+        # =================================================================
+        # 2. Handle Path Input (Local File)
+        # =================================================================
         if isinstance(image_input, Path):
-            # Handle local file
             if not image_input.exists():
-                raise FileNotFoundError(f"Local image file not found: {image_input}")
-            
+                raise FileNotFoundError(f"File not found: {image_input}")
+
             if not self.cloud_storage.is_supported_image(image_input):
                 raise ValueError(f"Unsupported image format: {image_input.suffix}")
-            
-            print(f"[INFO] Local image detected, uploading to cloud storage: {image_input.name}")
-            
-            # Upload to cloud storage
+
+            # 本地文件也是自动上传，转为 URL 供 SerpAPI 使用
+            print(f"[INFO] Auto-uploading local file: {image_input.name}")
             upload_result = await self.cloud_storage.upload_single_image(image_input)
-            image_url = upload_result['url']
-            
-            print(f"[INFO] Image uploaded successfully: {image_url}")
-            return image_url
-        
-        raise ValueError(f"Invalid image input: {image_input}")
+            return upload_result['url']
+
+        raise ValueError(f"Invalid image input type: {type(image_input)}")
     
     async def _search_by_url(self, session: aiohttp.ClientSession, image_url: str, k: int) -> List[Dict[str, str]]:
         """

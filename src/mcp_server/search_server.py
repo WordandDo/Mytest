@@ -122,17 +122,15 @@ async def upload_file_to_cloud(file_path: str) -> str:
 
 @ToolRegistry.register_tool("search_tools")
 async def crop_images_by_token(
-    crop_config: Dict[str, List[int]], 
-    messages: Optional[List[Dict[str, Any]]] = None,
-    storage_mode: str = "cloud"
+    crop_config: Dict[str, List[int]],
+    messages: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """
     Crop specific regions from images in the conversation history based on tokens.
-    
+
     Args:
         crop_config: Dictionary mapping tokens to crop boxes. Format: {"<token>": [left, top, right, bottom]}.
         messages: (Optional) The conversation history containing images. usually injected by the system, user doesn't need to provide.
-        storage_mode: 'cloud' (returns URL) or 'local' (returns path). Default is 'cloud'.
     """
     service = get_image_processor()
     if not service:
@@ -150,8 +148,7 @@ async def crop_images_by_token(
         # 如果未注入，工具会尝试仅处理 content (如果被错误传入) 或报错
         results = await service.batch_crop_images(
             crop_config=formatted_config,
-            messages=messages,
-            storage_mode=storage_mode
+            messages=messages
         )
         return json.dumps(results, ensure_ascii=False, indent=2)
     except Exception as e:

@@ -6,7 +6,7 @@
 DATA_PATH="${DATA_PATH:-src/data/rag_demo.jsonl}"
 NUM_ROLLOUTS="${NUM_ROLLOUTS:-5}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/rag_test_$(date +%Y%m%d_%H%M%S)}"
-MODEL_NAME="${MODEL_NAME:-gpt-4.1-2025-04-14}"
+MODEL_NAME="${MODEL_NAME:-openai/gpt-oss-120b}"
 MAX_TURNS="${MAX_TURNS:-15}"
 
 # MCP 服务器配置

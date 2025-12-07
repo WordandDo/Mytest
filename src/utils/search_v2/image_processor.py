@@ -107,13 +107,13 @@ class ImageProcessor:
                 all_sources.update(sources)
         return all_sources
 
-    async def batch_crop_images(self, 
+    async def batch_crop_images(self,
                               crop_config: Dict[str, Tuple[int, int, int, int]],
                               messages: Optional[List[Dict[str, Any]]] = None,
-                              content: Optional[List[Dict[str, Any]]] = None,
-                              storage_mode: str = "local") -> Dict[str, str]:
+                              content: Optional[List[Dict[str, Any]]] = None) -> Dict[str, str]:
         """
         执行批量裁切任务（内存优化版）。
+        存储模式由配置文件的 STORAGE_MODE 决定，不再通过参数传递。
         """
         # 1. 建立索引 (内存占用极小)
         # 仅存储 Token 字符串和 URL 字符串
@@ -128,8 +128,12 @@ class ImageProcessor:
             return {k: "Error: No images found for this token" for k in crop_config.keys()}
         
         results = {}
-        local_crop_dir = self.config.UPLOADS_DIR / "crops"
+        # 使用专用的裁切目录
+        local_crop_dir = self.config.CROPS_DIR
         local_crop_dir.mkdir(parents=True, exist_ok=True)
+
+        # 读取全局存储模式配置
+        current_mode = self.config.STORAGE_MODE
         
         # 2. 串行处理每个裁切任务 (保证同一时间内存中只有一张图片)
         for token, box in crop_config.items():
@@ -161,19 +165,27 @@ class ImageProcessor:
                 file_path = local_crop_dir / filename
                 
                 cropped_img.save(file_path, format=fmt)
-                
-                # 处理存储模式
-                if storage_mode == "local":
+
+                # 根据配置决定存储方式
+                if current_mode == "local":
                     results[token] = str(file_path.absolute())
-                elif storage_mode == "cloud":
+
+                elif current_mode == "cloud":
                     try:
                         upload_res = await self.cloud_storage.upload_single_image(file_path)
                         results[token] = upload_res['url']
-                        file_path.unlink()
+
+                        # 缓存清理控制
+                        if not self.config.KEEP_LOCAL_CACHE:
+                            file_path.unlink()
+                        else:
+                            print(f"[DEBUG] Kept local crop cache: {file_path.name}")
+
                     except Exception as upload_err:
                         results[token] = f"Error upload: {upload_err}"
+
                 else:
-                    results[token] = f"Error: Unknown storage_mode '{storage_mode}'"
+                    results[token] = f"Error: Unknown STORAGE_MODE: {current_mode}"
 
             except Exception as e:
                 print(f"[ERROR] Failed to crop <{token}>: {e}")
