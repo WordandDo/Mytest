@@ -10,7 +10,7 @@
     },
     {
       "//": "RAG 密集检索：仅提供密集向量检索工具(E5/Contriever)",
-      "resource_type": "rag",
+      "resource_type": "rag_hybrid",
       "tool_groups": [
         "rag_query"
       ]

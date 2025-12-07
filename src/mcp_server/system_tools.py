@@ -223,24 +223,30 @@ async def _sync_resource_sessions(worker_id: str, allocated_resources: dict):
     """
     [内部函数] 将原子分配的资源信息同步到各模块的全局变量
     """
-    # 同步 RAG 资源
+    # 同步 RAG 资源 (支持 rag 和 rag_hybrid 两种资源类型)
+    rag_resource_key = None
     if "rag" in allocated_resources:
-        rag_info = allocated_resources["rag"]
+        rag_resource_key = "rag"
+    elif "rag_hybrid" in allocated_resources:
+        rag_resource_key = "rag_hybrid"
+
+    if rag_resource_key:
+        rag_info = allocated_resources[rag_resource_key]
         try:
             from mcp_server.rag_server import GLOBAL_SESSIONS as RAG_SESSIONS
             resource_id = rag_info.get("id")
             token = rag_info.get("token")
             # [关键修正] 必须同时提取 base_url
-            base_url = rag_info.get("base_url") 
-            
+            base_url = rag_info.get("base_url")
+
             if resource_id and token: # 建议同时检查 base_url
                 RAG_SESSIONS[worker_id] = {
-                    "resource_id": resource_id, 
+                    "resource_id": resource_id,
                     "token": token,
                     "base_url": base_url, # [新增] 存入直连地址
                     "config_top_k": None  # 初始化配置项，防止后续查询出错
                 }
-                logger.info(f"[{worker_id}] Synced RAG session (Direct Mode: {base_url})")
+                logger.info(f"[{worker_id}] Synced RAG session from '{rag_resource_key}' (Direct Mode: {base_url})")
         except ImportError:
             pass
 

@@ -88,15 +88,21 @@ class HttpMCPRagEnv(HttpMCPEnv):
 
         This ensures only RAG-related modules are loaded, even if the
         config file contains other resource types.
+
+        NOTE: We must keep 'system' resource type as it provides essential
+        tools like allocate_batch_resources and setup_batch_resources.
+        Supports both 'rag' and 'rag_hybrid' resource types.
         """
         config = super()._load_gateway_config(config_path)
 
-        # Filter modules to only include RAG resources
+        # Filter modules to only include RAG resources AND system resources
+        # System resources are needed for resource allocation/lifecycle management
+        # Support both 'rag' and 'rag_hybrid' resource types
         if "modules" in config:
             original_count = len(config["modules"])
             config["modules"] = [
                 module for module in config["modules"]
-                if module.get("resource_type") == "rag"
+                if module.get("resource_type") in ["rag", "rag_hybrid", "system"]
             ]
             filtered_count = len(config["modules"])
 
@@ -104,7 +110,7 @@ class HttpMCPRagEnv(HttpMCPEnv):
             if filtered_count < original_count:
                 logger.info(
                     f"[{self.worker_id}] Gateway config filtered: "
-                    f"{filtered_count}/{original_count} modules (RAG only)"
+                    f"{filtered_count}/{original_count} modules (RAG/RAG_HYBRID + system only)"
                 )
 
         return config

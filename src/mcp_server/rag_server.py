@@ -90,7 +90,6 @@ async def setup_rag_session(worker_id: str, config: str = "{}") -> str:
     established via batch allocation and applies any additional configuration.
 
     Args:
-        worker_id: Unique worker identifier
         config: Optional JSON configuration string containing initialization parameters (e.g., top_k)
 
     Returns:
@@ -141,7 +140,6 @@ async def query_knowledge_base_dense(worker_id: str, query: str, top_k: Optional
     Top-k parameter follows priority: Agent explicit value > Task config > Backend default.
 
     Args:
-        worker_id: Unique worker identifier
         query: The query string to search for
         top_k: Optional number of top results to return (overrides task config)
 
@@ -165,7 +163,6 @@ async def query_knowledge_base_sparse(worker_id: str, query: str, top_k: Optiona
     Top-k parameter follows priority: Agent explicit value > Task config > Backend default.
 
     Args:
-        worker_id: Unique worker identifier
         query: The query string to search for
         top_k: Optional number of top results to return (overrides task config)
 
@@ -251,9 +248,6 @@ async def teardown_rag_session(worker_id: str) -> str:
 
     This tool releases the allocated RAG resources back to the resource pool
     and removes the local session registration.
-
-    Args:
-        worker_id: Unique worker identifier
 
     Returns:
         Status message string

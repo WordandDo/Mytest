@@ -10,7 +10,7 @@
     },
     {
       "//": "RAG 混合检索：同时提供稀疏(BM25)和密集(E5)检索工具",
-      "resource_type": "rag",
+      "resource_type": "rag_hybrid",
       "tool_groups": [
         "rag_query",
         "rag_query_sparse"

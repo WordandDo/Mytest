@@ -18,7 +18,8 @@ echo "✅ Gateway started with PID $GATEWAY_PID"
 echo "📊 Running Benchmark (Sparse)..."
 export OUTPUT_DIR="results/benchmark_sparse_only"
 export DATA_PATH="src/data/bamboogle.json" # 或 rag_demo.jsonl
-export NUM_ROLLOUTS=5
+export NUM_ROLLOUTS=10
+export GATEWAY_CONFIG_PATH="gateway_config_rag_sparse_only.json"
 
 ./run_rag_benchmark.sh
 

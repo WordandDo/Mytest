@@ -19,7 +19,8 @@ echo "📊 Running Benchmark (Dense)..."
 # 配置参数
 export OUTPUT_DIR="results/benchmark_dense_only"
 export DATA_PATH="src/data/bamboogle.json" # 或 rag_demo.jsonl
-export NUM_ROLLOUTS=5
+export NUM_ROLLOUTS=10
+export GATEWAY_CONFIG_PATH="gateway_config_rag_dense_only.json"
 
 # 调用现有的测评脚本
 ./run_rag_benchmark.sh

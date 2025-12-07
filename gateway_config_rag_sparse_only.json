@@ -10,7 +10,7 @@
     },
     {
       "//": "RAG 稀疏检索：仅提供关键词匹配工具(BM25)",
-      "resource_type": "rag",
+      "resource_type": "rag_hybrid",
       "tool_groups": [
         "rag_query_sparse"
       ]
