@@ -5,6 +5,7 @@ import json
 import logging
 import asyncio
 import time
+import re
 from typing import Dict, Any, Union, Optional, List, Tuple
 from datetime import datetime
 
@@ -317,8 +318,27 @@ class HttpMCPEnv:
         return messages
 
     def _extract_final_answer(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        Extract final answer from messages.
+        First tries to extract content within <FINAL_ANSWER> tags.
+        Falls back to returning the last assistant message if tags not found.
+        """
         if not messages:
             return None
+
+        # Search for messages with FINAL_ANSWER tags (from newest to oldest)
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    # Try to extract answer from special tokens
+                    match = re.search(r'<FINAL_ANSWER>(.*?)</FINAL_ANSWER>', content, re.DOTALL)
+                    if match:
+                        answer = match.group(1).strip()
+                        if answer:
+                            return answer
+
+        # Fallback: return last assistant message if no tags found
         for msg in reversed(messages):
             if msg.get("role") == "assistant":
                 content = msg.get("content")
@@ -326,6 +346,7 @@ class HttpMCPEnv:
                     return content
                 if content is not None:
                     return str(content)
+
         return None
     
     def _save_conversation_log(self, output_dir, task_id, question, model, messages, result):

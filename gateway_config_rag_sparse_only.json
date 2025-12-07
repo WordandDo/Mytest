@@ -1,0 +1,19 @@
+{
+  "server_name": "RAG Sparse-Only Agent Gateway",
+  "port": 8080,
+  "debug": true,
+  "modules": [
+    {
+      "//": "系统基础工具（必需）",
+      "resource_type": "system",
+      "tool_groups": ["system_resource"]
+    },
+    {
+      "//": "RAG 稀疏检索：仅提供关键词匹配工具(BM25)",
+      "resource_type": "rag",
+      "tool_groups": [
+        "rag_query_sparse"
+      ]
+    }
+  ]
+}

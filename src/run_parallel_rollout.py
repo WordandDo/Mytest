@@ -561,6 +561,7 @@ if __name__ == "__main__":
     # MCP 相关配置
     parser.add_argument("--mcp_server_url", type=str, default="http://localhost:8080", help="MCP Server URL")
     parser.add_argument("--resource_api_url", type=str, default="http://localhost:8000", help="Resource API URL")
+    parser.add_argument("--gateway_config_path", type=str, default="gateway_config.json", help="Path to gateway config file")
     
     # 额外配置 (Agent)
     parser.add_argument("--model_name", type=str, default="gpt-4.1-2025-04-14", help="Agent model name")
@@ -582,6 +583,7 @@ if __name__ == "__main__":
         "observation_type": "screenshot_a11y_tree",
         "mcp_server_url": args.mcp_server_url,
         "resource_api_url": args.resource_api_url,
+        "gateway_config_path": args.gateway_config_path,
     }
     
     config = ParallelRolloutConfig(

@@ -62,17 +62,17 @@
       }
     },
     "rag_hybrid": {
-      "enabled": false,
+      "enabled": true,
       "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
       "config": {
         "num_rag_workers": 50,
-        "rag_index_path": "/path/to/hybrid_index",
+        "rag_index_path": "/home/a1/sdb/wikidata4rag/Search-r1",
         "rag_model_name": "intfloat/e5-base-v2",
 
         "use_hybrid": true,
-        "bm25_index_path": "/path/to/bm25_index",
-        "dense_index_path": "/path/to/dense_index/e5_Flat.index",
-        "corpus_path": "/path/to/corpus.jsonl",
+        "bm25_index_path": "/home/a1/sdb/wikidata4rag/Search-r1/bm25_index",
+        "dense_index_path": "/home/a1/sdb/wikidata4rag/Search-r1/e5_Flat.index",
+        "corpus_path": "/home/a1/sdb/wikidata4rag/Search-r1/data00/jiajie_jin/flashrag_indexes/wiki_dpr_100w/wiki_dump.jsonl",
 
         "embedding_device": "cuda",
         "use_gpu_index": true,

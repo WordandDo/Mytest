@@ -1,17 +1,100 @@
 """
 Benchmark class for AgentFlow - loads and evaluates benchmark datasets.
+Updated with SQuAD-style evaluation metrics (Normalization, Counter-based F1).
 """
 
 import json
 import os
-from typing import List, Dict, Any, Optional, Union, Callable
-from abc import ABC, abstractmethod
+import string
 import re
 import difflib
+from typing import List, Dict, Any, Optional, Union, Callable
+from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
 import openai
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ==========================================
+# SQuAD-style Evaluation Helper Functions
+# ==========================================
+
+def normalize_answer(s):
+    """
+    对答案进行标准化处理：
+    1. 移除冠词 (a, an, the)
+    2. 修复多余空白
+    3. 移除标点符号
+    4. 转换为小写
+    """
+    def remove_articles(text):
+        return re.sub(r'\b(a|an|the)\b', ' ', text)
+
+    def white_space_fix(text):
+        return ' '.join(text.split())
+
+    def remove_punc(text):
+        exclude = set(string.punctuation)
+        return ''.join(ch for ch in text if ch not in exclude)
+
+    def lower(text):
+        return text.lower()
+
+    return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+def bool_mapping(s):
+    """
+    将布尔字符串映射为 yes/no，用于统一格式
+    """
+    if s == "True":
+        return "yes"
+    elif s == "False":
+        return "no"
+    else:
+        return s
+
+def compute_exact_match(prediction, ground_truth):
+    """
+    严格精确匹配：标准化后的字符串必须完全相等
+    """
+    return (normalize_answer(bool_mapping(prediction)) == normalize_answer(bool_mapping(ground_truth)))
+
+def compute_f1_score(prediction, ground_truth):
+    """
+    计算 F1 分数，包含 Precision 和 Recall。
+    针对 'yes', 'no', 'noanswer' 有特殊惩罚机制。
+    Returns: (f1, precision, recall)
+    """
+    normalized_prediction = normalize_answer(bool_mapping(prediction))
+    normalized_ground_truth = normalize_answer(bool_mapping(ground_truth))
+
+    ZERO_METRIC = (0.0, 0.0, 0.0)
+
+    # 特殊处理：如果预测或真实值是 yes/no/noanswer 且不匹配，直接给 0 分
+    if normalized_prediction in ['yes', 'no', 'noanswer'] and normalized_prediction != normalized_ground_truth:
+        return ZERO_METRIC
+    if normalized_ground_truth in ['yes', 'no', 'noanswer'] and normalized_prediction != normalized_ground_truth:
+        return ZERO_METRIC
+
+    # 构建词袋并统计重叠词数
+    prediction_tokens = normalized_prediction.split()
+    ground_truth_tokens = normalized_ground_truth.split()
+    common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+    num_same = sum(common.values())
+
+    # 如果没有重叠词
+    if num_same == 0:
+        return ZERO_METRIC
+
+    # 计算 Precision, Recall, F1
+    precision = 1.0 * num_same / len(prediction_tokens)
+    recall = 1.0 * num_same / len(ground_truth_tokens)
+    f1 = (2 * precision * recall) / (precision + recall)
+    
+    return f1, precision, recall
+
+# ==========================================
 
 @dataclass
 class BenchmarkItem:
@@ -273,7 +356,7 @@ class Benchmark(ABC):
                        ground_truth: str, 
                        prediction: str, 
                        metric: str, 
-                       question: str = None,
+                       question: Optional[str] = None,
                        **kwargs) -> float:
         """Compute a specific metric between ground truth and prediction."""
         metric_func = self._get_metric_function(metric)
@@ -302,27 +385,13 @@ class Benchmark(ABC):
         return metric_functions[metric]
     
     def _exact_match(self, ground_truth: str, prediction: str, **kwargs) -> float:
-        """Exact string match."""
-        return 1.0 if ground_truth.strip() == prediction.strip() else 0.0
+        """Exact string match using SQuAD normalization."""
+        return 1.0 if compute_exact_match(prediction, ground_truth) else 0.0
     
     def _f1_score(self, ground_truth: str, prediction: str, **kwargs) -> float:
-        """F1 score based on word overlap."""
-        gt_words = set(ground_truth.lower().split())
-        pred_words = set(prediction.lower().split())
-        
-        if not gt_words and not pred_words:
-            return 1.0
-        if not gt_words or not pred_words:
-            return 0.0
-        
-        intersection = gt_words & pred_words
-        precision = len(intersection) / len(pred_words)
-        recall = len(intersection) / len(gt_words)
-        
-        if precision + recall == 0:
-            return 0.0
-        
-        return 2 * (precision * recall) / (precision + recall)
+        """F1 score based on word overlap using SQuAD logic."""
+        f1, _, _ = compute_f1_score(prediction, ground_truth)
+        return f1
     
     def _bleu_score(self, ground_truth: str, prediction: str, **kwargs) -> float:
         """Simple BLEU-like score based on n-gram overlap."""
@@ -380,7 +449,10 @@ class Benchmark(ABC):
     
     def _contains_answer(self, ground_truth: str, prediction: str, **kwargs) -> float:
         """Check if prediction contains the ground truth answer."""
-        return 1.0 if ground_truth.strip().lower() in prediction.strip().lower() else 0.0
+        # Use normalization here too for consistency
+        norm_gt = normalize_answer(ground_truth)
+        norm_pred = normalize_answer(prediction)
+        return 1.0 if norm_gt in norm_pred else 0.0
     
     def _numeric_match(self, ground_truth: str, prediction: str, **kwargs) -> float:
         """Extract and compare numeric values."""
@@ -427,7 +499,8 @@ Did the model give an answer equivalent to the labeled answer? Please respond wi
             frequency_penalty=0.0,
             presence_penalty=0.0
         )
-        return response.choices[0].message.content.strip() == "Correct"
+        result = response.choices[0].message.content
+        return float((result.strip() if result is not None else "") == "Correct")
     
     def _extract_numbers(self, text: str) -> List[float]:
         """Extract all numbers from text."""
@@ -445,14 +518,11 @@ Did the model give an answer equivalent to the labeled answer? Please respond wi
         details = {}
         
         if metric == "f1_score":
-            gt_words = set(ground_truth.lower().split())
-            pred_words = set(prediction.lower().split())
-            intersection = gt_words & pred_words
+            f1, precision, recall = compute_f1_score(prediction, ground_truth)
             details = {
-                "ground_truth_words": len(gt_words),
-                "prediction_words": len(pred_words),
-                "common_words": len(intersection),
-                "common_words_list": list(intersection)
+                "f1": f1,
+                "precision": precision,
+                "recall": recall
             }
         elif metric == "numeric_match":
             details = {

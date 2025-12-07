@@ -1,0 +1,19 @@
+{
+  "server_name": "RAG Dense-Only Agent Gateway",
+  "port": 8080,
+  "debug": true,
+  "modules": [
+    {
+      "//": "系统基础工具（必需）",
+      "resource_type": "system",
+      "tool_groups": ["system_resource"]
+    },
+    {
+      "//": "RAG 密集检索：仅提供密集向量检索工具(E5/Contriever)",
+      "resource_type": "rag",
+      "tool_groups": [
+        "rag_query"
+      ]
+    }
+  ]
+}

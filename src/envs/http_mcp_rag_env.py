@@ -18,6 +18,7 @@ You must use tool to retrieve information to answer and verify. Don't answer by 
 
 ## Answer Strategy
 The final answer only contains the short answer to the question (few words), no other words like reasoning content.
+**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
 """
 
 

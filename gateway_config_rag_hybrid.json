@@ -1,0 +1,20 @@
+{
+  "server_name": "RAG Hybrid Agent Gateway",
+  "port": 8080,
+  "debug": true,
+  "modules": [
+    {
+      "//": "系统基础工具（必需）",
+      "resource_type": "system",
+      "tool_groups": ["system_resource"]
+    },
+    {
+      "//": "RAG 混合检索：同时提供稀疏(BM25)和密集(E5)检索工具",
+      "resource_type": "rag",
+      "tool_groups": [
+        "rag_query",
+        "rag_query_sparse"
+      ]
+    }
+  ]
+}
