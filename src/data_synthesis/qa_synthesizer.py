@@ -114,34 +114,35 @@ Answer: {example.get('answer', '')}
                 prompt += "\n"
         
         prompt += f"""
-Please synthesize a Q&A pair based on the trajectory:
+Please synthesize a high-quality Q&A pair based on the trajectory:
 
-## Question Requirements:
-- Refer to the style and complexity of examples
-- Requires multi-step reasoning to reach the answer
-- Question should be clear but require exploration
-- Question should naturally arise from the exploration process
+## Question Requirements (Crucial for Difficulty):
+- **Complex Reasoning**: The question MUST require synthesizing information from multiple steps or documents. Avoid simple single-fact lookups.
+- **Specific Granularity**: Ask for specific details, mechanisms, causal relationships, or comparisons. **AVOID** broad, report-style questions like "What are the features of X?" or "List the applications of Y".
+- **De-contextualized**: The question should be understandable without seeing the trajectory (e.g., use "What were the major NLP milestones in the 1950s?" instead of "What did the agent find in step 1?").
 
-## Answer Requirements:
-- Concise and clear
-- Based on real information from the trajectory
-- Answer should naturally derive from the exploration trajectory
+## Answer Requirements (Crucial for Conciseness):
+- **Strict Length Limit**: Keep the answer concise (approx. 2-4 sentences). **DO NOT** generate long reports or summaries.
+- **Directness**: Answer the question directly. Do not start with "Based on the search results..." or "The documents mention...".
+- **Format Constraint**: Avoid using bullet points or numbered lists unless absolutely necessary for an enumeration question. Prefer a cohesive paragraph.
+- **Groundedness**: All facts must come strictly from the provided trajectory observations.
 
 ## Reasoning Steps Requirements:
-- Clearly show the reasoning process from question to answer
-- Each step should explain the tool used and information obtained
+- Clearly show the logical deduction process from the raw observations to the final answer.
+- Explain *why* certain information from the trajectory was selected or discarded.
+- **Observation Fidelity**: The 'observation' field in the JSON MUST contain direct excerpts or key quotes from the actual trajectory. DO NOT summarize heavily; allow the noise to remain if it helps the model learn to filter information.
 
 Return in JSON format:
 {{
     "question": "question text",
-    "answer": "answer content",
+    "answer": "concise answer content",
     "reasoning_steps": [
         {{
             "step": 1,
             "description": "step description",
             "intent": "step intent",
             "action": "tool used",
-            "observation": "summary of observed information"
+            "observation": "Direct excerpts or key snippets from the raw trajectory observation (do not hallucinate new info)"
         }},
         ...
     ]

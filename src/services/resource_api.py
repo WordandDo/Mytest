@@ -41,6 +41,9 @@ app = FastAPI()
 # 使用Optional类型注解表明该变量可能为None
 manager: Optional[GenericResourceManager] = None
 
+# [新增] 定义默认配置文件路径，优先读取环境变量
+DEFAULT_CONFIG_PATH = os.environ.get("DEPLOYMENT_CONFIG_PATH", "deployment_config.json")
+
 def kill_port_process(port: int):
     """
     强制杀死占用指定端口的进程
@@ -75,12 +78,12 @@ def kill_port_process(port: int):
 
 # [新增] 带有环境变量替换功能的配置加载器
 # 支持在配置文件中使用${VAR_NAME}的形式引用环境变量
-def load_deployment_config(path: str = "deployment_config.json") -> Dict[str, Any]:
+def load_deployment_config(path: str = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
     """
     加载部署配置文件，并处理其中的环境变量替换
     
     Args:
-        path: 配置文件路径，默认为"deployment_config.json"
+        path: 配置文件路径，默认为 DEFAULT_CONFIG_PATH (环境变量或 "deployment_config.json")
         
     Returns:
         解析后的配置字典
@@ -127,7 +130,11 @@ async def startup_event():
         kill_port_process(8000)
         
         # 2. 加载统一配置
-        config = load_deployment_config("deployment_config.json")
+        # [修改] 明确使用计算出的 DEFAULT_CONFIG_PATH，并打印日志
+        config_path = DEFAULT_CONFIG_PATH
+        logger.info(f"🚀 Starting Resource API with config: {config_path}")
+        
+        config = load_deployment_config(config_path)
         
         # 3. 初始化通用管理器
         manager = GenericResourceManager(config)
