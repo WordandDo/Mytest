@@ -165,6 +165,7 @@ class GenericTrajectorySampler:
                     continue
                 
                 # Execute action to get observation
+                print("action", action)
                 observation = self._execute_action(action)
                 
                 # Create new node
