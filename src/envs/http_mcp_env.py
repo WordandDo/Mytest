@@ -8,6 +8,7 @@ import time
 import re
 from typing import Dict, Any, Union, Optional, List, Tuple
 from datetime import datetime
+from dataclasses import dataclass
 
 # 引入 MCP SDK
 from mcp.types import CallToolResult
@@ -25,6 +26,12 @@ from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolPara
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class ToolMetadata:
+    """用于适配 GenericTrajectorySampler 的简单工具包装类"""
+    name: str
+    description: str
+    parameters: List[Dict[str, Any]]
 
 class HttpMCPEnv:
     """
@@ -48,6 +55,8 @@ class HttpMCPEnv:
         # 工具元数据缓存
         self.tool_schemas: List[Dict[str, Any]] = []
         self.tool_descriptions: str = ""
+        # [新增] 本地工具缓存，用于支持 get_tool
+        self.local_tools: Dict[str, ToolMetadata] = {}
 
         # 1. 基础配置
         self.server_url = kwargs.get("mcp_server_url", "http://localhost:8080")
@@ -91,6 +100,21 @@ class HttpMCPEnv:
     @property
     def mode(self) -> str:
         return "http_mcp"
+
+    # =========================================================================
+    # [新增/修复] 核心适配接口：get_tool 和 list_tools
+    # =========================================================================
+
+    def list_tools(self) -> List[str]:
+        """返回所有可用工具的名称列表"""
+        return list(self.local_tools.keys())
+
+    def get_tool(self, tool_name: str) -> Optional[ToolMetadata]:
+        """
+        获取工具对象（适配器模式）。
+        GenericTrajectorySampler 需要访问 tool.name, tool.description, tool.parameters
+        """
+        return self.local_tools.get(tool_name)
 
     # =========================================================================
     # 核心 Agent 执行逻辑
@@ -463,7 +487,7 @@ class HttpMCPEnv:
             return {"modules": []}
 
     def _initialize_tools(self):
-        """从 MCP Server 获取工具列表"""
+        """从 MCP Server 获取工具列表并进行本地适配"""
         if not self._tools_initialized:
             return
 
@@ -481,6 +505,8 @@ class HttpMCPEnv:
             }
 
             valid_tools = []
+            self.local_tools = {}
+
             for t in mcp_tools:
                 # 检查是否在黑名单中
                 if t.name in blacklist:
@@ -493,6 +519,15 @@ class HttpMCPEnv:
                     continue
                 
                 valid_tools.append(t)
+                
+                # [核心适配] 将 MCP Schema 转换为 ToolMetadata (List[Dict] 格式)
+                # 这允许 GenericTrajectorySampler 能够读取 tool.parameters
+                converted_params = self._convert_schema_to_params(t.inputSchema)
+                self.local_tools[t.name] = ToolMetadata(
+                    name=t.name,
+                    description=t.description or "",
+                    parameters=converted_params
+                )
 
             # 生成 Schema 和描述字符串给 LLM
             self.tool_schemas = [self._convert_mcp_tool_to_openai(t) for t in valid_tools]
@@ -500,17 +535,48 @@ class HttpMCPEnv:
             descriptions = [f"- {t.name}: {t.description or 'No description.'}" for t in valid_tools]
             self.tool_descriptions = "\n".join(descriptions)
 
-            # 减少日志：仅输出工具数量
-            logger.info(f"[{self.worker_id}] {len(valid_tools)} tools initialized")
+            # 减少日志：移除工具数量日志
+            # logger.info(f"[{self.worker_id}] {len(valid_tools)} tools initialized")
 
         except Exception as e:
-            logger.error(f"Failed to initialize tools: {e}")
-            self.tool_schemas = []
-            self.tool_descriptions = "Error loading tools."
+            logger.error(f"[{self.worker_id}] Failed to initialize tools: {e}")
+
+    def _convert_schema_to_params(self, schema: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """将 JSON Schema properties 转换为参数列表格式"""
+        params = []
+        if not schema or "properties" not in schema:
+            return params
+            
+        required_set = set(schema.get("required", []))
+        properties = schema.get("properties", {})
+        
+        for name, prop in properties.items():
+            if name == "worker_id": 
+                continue
+            
+            param_def = {
+                "name": name,
+                "type": prop.get("type", "string"),
+                "description": prop.get("description", ""),
+                "required": name in required_set
+            }
+            if param_def["type"] == "array" and "items" in prop:
+                 param_def["array_type"] = prop["items"].get("type", "string")
+                 
+            params.append(param_def)
+        return params
 
     def _convert_mcp_tool_to_openai(self, mcp_tool) -> ChatCompletionToolParam:
-        parameters = mcp_tool.inputSchema.copy() if hasattr(mcp_tool, "inputSchema") else {}
-        # 移除内部参数 worker_id
+        """
+        将 MCP 工具定义转换为 OpenAI 工具格式。
+        自动移除 worker_id 参数，因为它由环境自动注入。
+        """
+        # 深拷贝避免修改原始 schema
+        parameters = {}
+        if hasattr(mcp_tool, "inputSchema") and mcp_tool.inputSchema:
+            parameters = mcp_tool.inputSchema.copy()
+        
+        # 移除 worker_id 参数（环境自动注入）
         if "properties" in parameters and "worker_id" in parameters["properties"]:
             del parameters["properties"]["worker_id"]
         if "required" in parameters and "worker_id" in parameters["required"]:
@@ -520,8 +586,8 @@ class HttpMCPEnv:
             "type": "function",
             "function": {
                 "name": mcp_tool.name,
-                "description": mcp_tool.description,
-                "parameters": parameters 
+                "description": mcp_tool.description or "No description provided.",
+                "parameters": parameters
             }
         }
 
@@ -541,40 +607,65 @@ class HttpMCPEnv:
     def _list_tools_sync(self):
         return self._run_sync(self.mcp_client.list_tools())
 
-    def _call_tool_sync(self, name, arguments) -> Union[Dict[str, Any], Any]:
-        """同步调用 MCP 工具"""
+    def _call_tool_sync(self, name: str, arguments: Union[Dict[str, Any], str]):
+        """
+        同步调用 MCP 工具
+        
+        自动注入 worker_id 参数（如果缺失）以确保工具调用的一致性。
+        特殊处理资源管理类工具的返回值。
+        """
+        # 确保参数是字典格式
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON arguments for tool {name}: {arguments}")
+                raise ValueError(f"Invalid JSON arguments for tool {name}")
+
+        # 自动注入 worker_id（如果缺失）
         if isinstance(arguments, dict) and "worker_id" not in arguments:
             arguments["worker_id"] = self.worker_id
 
-        # 减少日志：移除工具调用开始日志
-        # logger.info(f"[{self.worker_id}] ⏳ Calling tool: {name}")
-        res = self._run_sync(self.mcp_client.call_tool(name, arguments))
-        
-        # 生命周期工具直接返回原始结果，不进行标准化包装
-        lifecycle_tools = {
-            "allocate_batch_resources", "setup_batch_resources", 
-            "get_batch_initial_observations", "teardown_environment"
-        }
-        if name in lifecycle_tools:
-            return res 
+        # 发起同步工具调用
+        res: CallToolResult = self._run_sync(self.mcp_client.call_tool(name, arguments))
 
-        # 通用输出标准化
-        standardized_output = {"text": "", "images": []}
-        text_parts = []
-        
+        # 特殊处理资源管理类工具（直接返回原始结果）
+        resource_management_tools = {
+            "allocate_batch_resources", "setup_batch_resources",
+            "get_batch_initial_observations", "teardown_environment",
+            "release_batch_resources"
+        }
+        if name in resource_management_tools:
+            return res
+
+        # 标准化输出格式（文本+图像）
+        output = {
+            "text": "",
+            "images": []
+        }
+
+        # 解析 MCP 响应内容
+        texts = []
         if hasattr(res, 'content') and res.content:
             for item in res.content:
+                # 文本内容累积
                 if item.type == 'text':
-                    text_parts.append(item.text)
+                    texts.append(item.text)
+                # 图像内容收集
                 elif item.type == 'image':
-                    standardized_output["images"].append(item.data)
-                elif item.type == 'resource':
-                    text_parts.append(f"[Resource: {item.resource.uri}]")
+                    # 支持 Data URI 和纯 Base64 两种格式
+                    image_data = item.data
+                    if ',' in image_data:
+                        # Data URI 格式: data:image/png;base64,...
+                        image_data = image_data.split(',', 1)[1]
+                    output["images"].append(image_data)
         else:
-            text_parts.append(str(res) if res else "Success")
+            # 无内容时返回默认成功消息
+            texts.append(str(res) if res else "Success")
 
-        standardized_output["text"] = "\n".join(text_parts)
-        return standardized_output
+        # 合并所有文本内容
+        output["text"] = "\n".join(texts)
+        return output
 
     def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:
         try:
@@ -673,7 +764,7 @@ class HttpMCPEnv:
 
         try:
             if not self.active_resources:
-                 logger.info(f"[{worker_id}] Running in stateless mode (no heavy resources required). Initializing tools only.")
+                 logger.info(f"[{self.worker_id}] Running in stateless mode (no heavy resources required). Initializing tools only.")
                  # 即使没有需要分配的资源，也调用获取观察值，因为可能有无状态工具可用
                  self.get_inital_obs()
                  return True

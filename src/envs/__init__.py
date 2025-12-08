@@ -10,48 +10,67 @@ from .data_models import (
 )
 
 # Lazy imports for concrete environments to avoid tool dependency issues at import time
-# These will only be imported when actually used
 def __getattr__(name):
     """Lazy import for environment classes."""
+    
+    # 1. 基础环境
     if name == "Environment":
         from .enviroment import Environment
         return Environment
     elif name == "Tool":
         from tools.tool import Tool
         return Tool
-    elif name == "MathEnvironment":
-        from .math_environment import MathEnvironment
-        return MathEnvironment
-    elif name == "create_math_environment":
-        from .math_environment import create_math_environment
-        return create_math_environment
-    elif name == "PythonEnvironment":
-        from .python_environment import PythonEnvironment
-        return PythonEnvironment
-    elif name == "create_python_environment":
-        from .python_environment import create_python_environment
-        return create_python_environment
+        
+    # 2. RAG 环境 (修正映射关系)
     elif name == "RAGEnvironment":
-        from .rag_environment import RAGEnvironment
+        # [关键修正] 将 RAGEnvironment 映射到 http_mcp_rag_env 模块
+        from .http_mcp_rag_env import HttpMCPRagEnv as RAGEnvironment
         return RAGEnvironment
     elif name == "create_rag_environment":
-        from .rag_environment import create_rag_environment
+        # 简单的工厂函数封装
+        def create_rag_environment(**kwargs):
+            from .http_mcp_rag_env import HttpMCPRagEnv
+            return HttpMCPRagEnv(**kwargs)
         return create_rag_environment
+
+    # 3. 其他环境 (Math, Python, Web, OSWorld)
+    # 注意：确保这些对应的 .py 文件真实存在，否则也会报类似的错
+    elif name == "MathEnvironment":
+        try:
+            from .math_environment import MathEnvironment
+            return MathEnvironment
+        except ImportError:
+            # 容错处理：如果文件不存在，抛出更清晰的错误
+            raise ImportError("MathEnvironment module is missing (src/envs/math_environment.py)")
+            
+    elif name == "PythonEnvironment":
+        try:
+            from .python_environment import PythonEnvironment
+            return PythonEnvironment
+        except ImportError:
+            raise ImportError("PythonEnvironment module is missing (src/envs/python_environment.py)")
+            
     elif name == "WebEnvironment":
-        from .web_environment import WebEnvironment
-        return WebEnvironment
-    elif name == "create_web_environment":
-        from .web_environment import create_web_environment
-        return create_web_environment
+        try:
+            from .web_environment import WebEnvironment
+            return WebEnvironment
+        except ImportError:
+            raise ImportError("WebEnvironment module is missing (src/envs/web_environment.py)")
+            
     elif name == "TBenchEnvironment":
-        from .tbench_environment import TBenchEnvironment
-        return TBenchEnvironment
+        try:
+            from .tbench_environment import TBenchEnvironment
+            return TBenchEnvironment
+        except ImportError:
+            raise ImportError("TBenchEnvironment module is missing (src/envs/tbench_environment.py)")
+            
     elif name == "OSWorldEnvironment":
-        from .osworld_environment import OSWorldEnvironment
-        return OSWorldEnvironment
-    elif name == "create_osworld_environment":
-        from .osworld_environment import create_osworld_environment
-        return create_osworld_environment
+        try:
+            from .osworld_environment import OSWorldEnvironment
+            return OSWorldEnvironment
+        except ImportError:
+            raise ImportError("OSWorldEnvironment module is missing (src/envs/osworld_environment.py)")
+
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 __all__ = [
@@ -65,14 +84,10 @@ __all__ = [
     # Environments (lazy loaded)
     "MathEnvironment",
     "PythonEnvironment",
-    "RAGEnvironment",
+    "RAGEnvironment",  # <--- 现在这个名字是安全的别名
     "WebEnvironment",
     "TBenchEnvironment",
     "OSWorldEnvironment",
-    # Factory functions (lazy loaded)
-    "create_math_environment",
-    "create_python_environment",
-    "create_rag_environment",
-    "create_web_environment",
-    "create_osworld_environment"
+    # Factory functions
+    "create_rag_environment"
 ]

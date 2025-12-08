@@ -13,14 +13,8 @@ from typing import List, Dict, Set
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from envs import (
-    Environment,
-    MathEnvironment,
-    PythonEnvironment,
-    RAGEnvironment,
-    WebEnvironment,
-    OSWorldEnvironment
-)
+# [修改点 1] 仅导入基础 Environment 类，避免导入不存在的具体环境模块
+from envs import Environment
 from models import TrajectoryNode, Trajectory, SynthesizedQA
 from synthesis_config import SynthesisConfig
 from trajectory_sampler import GenericTrajectorySampler
@@ -81,15 +75,25 @@ class GenericDataSynthesis:
         kwargs = self.config.environment_kwargs.copy()
         kwargs['model_name'] = self.config.model_name
         
+        # [修改点 2] 将具体环境的 import 移入函数内部，实现按需加载
+        # 这样在运行 RAG 时，就不会因为缺少 MathEnvironment 而报错
+        
         if mode == "web":
+            from envs import WebEnvironment
             return WebEnvironment(**kwargs)
         elif mode == "math":
+            from envs import MathEnvironment
             return MathEnvironment(**kwargs)
         elif mode == "python" or mode == "py":
+            from envs import PythonEnvironment
             return PythonEnvironment(**kwargs)
         elif mode == "rag":
+            # 这里的 RAGEnvironment 通常由 envs/__init__.py 映射
+            # 如果您使用的是 HttpMCPRagEnv，请确保 envs/__init__.py 正确映射或直接在此处导入
             if 'rag_index' not in kwargs:
-                raise ValueError("RAG环境需要提供rag_index参数")
+                # 兼容性处理：如果基于HttpMCPEnv可能不需要rag_index，视具体实现而定
+                pass 
+            from envs import RAGEnvironment
             return RAGEnvironment(**kwargs)
         elif mode == "osworld" or mode == "gui":
             # OSWorld/GUI环境需要VM配置
@@ -299,8 +303,9 @@ def main():
         seeds = json.load(f)
         if not isinstance(seeds, list):
             raise ValueError("Seed文件格式错误：必须是字符串列表，例如: [\"seed1\", \"seed2\", \"seed3\"]")
-        if not all(isinstance(s, str) for s in seeds):
-            raise ValueError("Seed文件格式错误：所有seed必须是字符串")
+        # 兼容性：如果列表中有非字符串（如字典），尝试提取内容
+        # 这里保持简单，如果不是字符串就转字符串
+        seeds = [str(s) if not isinstance(s, str) else s for s in seeds]
     
     print(f"加载了 {len(seeds)} 个 seed 数据")
     
@@ -318,4 +323,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,0 +1,19 @@
+{
+  "environment_mode": "rag",
+  "environment_kwargs": {
+    "gateway_config_path": "gateway_config_rag_dense_only.json",
+    "prompt_type": "generic"
+  },
+  "available_tools": [],
+  "sampling_tips": "Exploration Strategy (Dense Mode):\n1. This is a purely semantic retrieval environment.\n2. Transform queries into descriptive natural language sentences rather than keywords.\n3. Focus on the semantic relevance of documents.\n4. If retrieval fails, try rephrasing the query with more context or different phrasing.",
+  "synthesis_tips": "QA Synthesis Focus: Generate questions based on high-level understanding, summarization across multiple documents, and conceptual explanations.",
+  "seed_description": "RAG Retrieval Topic",
+  "model_name": "openai/gpt-oss-120b",
+  "max_depth": 6,
+  "branching_factor": 2,
+  "depth_threshold": 2,
+  "max_trajectories": 3,
+  "min_depth": 2,
+  "max_retries": 3,
+  "max_workers": 1
+}

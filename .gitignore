@@ -1,5 +1,8 @@
 # Environment files
 .env
+# bash scripts and configuration files
+*.sh
+*.bash
 #results directory
 /results/
 /results_0/

@@ -69,6 +69,8 @@ class GenericTrajectorySampler:
                     "parameters": tool.parameters
                 })
         
+        # 添加调试日志以确认加载的工具
+        print(f"DEBUG: Loaded Tools: {[t['name'] for t in tools]}")
         return tools
     
     def _generate_tool_descriptions(self) -> str:
@@ -241,8 +243,16 @@ class GenericTrajectorySampler:
     def _build_action_generation_prompt(self, seed_data: str, history: str, current_observation: str) -> str:
         """Build action generation prompt (dynamically generated based on configuration)"""
         
-        # Generic prompt template
-        prompt = f"""You are an intelligent Agent using available tools for exploration and reasoning.
+        # Try to get system prompt from environment (if supported)
+        system_instruction = ""
+        if hasattr(self.environment, "get_system_prompt"):
+            # Get environment-specific prompt (including tool usage strategy)
+            system_instruction = self.environment.get_system_prompt(task_question=f"Exploration Task: {seed_data}")
+        else:
+            system_instruction = "You are an intelligent Agent using available tools for exploration and reasoning."
+        
+        # Use environment prompt to replace default opening
+        prompt = f"""{system_instruction}
 
 [Starting Point Information]
 Content: {seed_data}"""

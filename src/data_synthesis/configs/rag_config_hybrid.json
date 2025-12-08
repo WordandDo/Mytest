@@ -1,0 +1,19 @@
+{
+  "environment_mode": "rag",
+  "environment_kwargs": {
+    "gateway_config_path": "gateway_config_rag_hybrid.json",
+    "prompt_type": "hybrid"
+  },
+  "available_tools": [],
+  "sampling_tips": "Exploration Strategy (Hybrid Mode):\n1. Analyze the intent first: Are you looking for specific entities (Sparse) or conceptual understanding (Dense)?\n2. Prioritize [rag_query_sparse] for IDs, names, codes, or exact numbers.\n3. Prioritize [rag_query] for background info, principles, or summaries.\n4. If one method yields no results, you MUST switch to the other.\n5. Explicitly state in your 'intent' why you chose the specific retrieval method.",
+  "synthesis_tips": "QA Synthesis Focus: Generate questions that require combining specific details (found via Sparse) with conceptual understanding (found via Dense). Focus on scenarios where exact matching corrects semantic drift.",
+  "seed_description": "RAG Retrieval Topic",
+  "model_name": "openai/gpt-oss-120b",
+  "max_depth": 6,
+  "branching_factor": 2,
+  "depth_threshold": 2,
+  "max_trajectories": 3,
+  "min_depth": 2,
+  "max_retries": 3,
+  "max_workers": 1
+}
