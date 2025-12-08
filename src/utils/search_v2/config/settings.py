@@ -44,10 +44,8 @@ class Config:
     PAN123_PARENT_FILE_ID = os.getenv(
         "PAN123_PARENT_FILE_ID", "yk6baz03t0l000d7w33fl91aiec2g63tDIYvDdYyAIU2AvxPDqYw"
     )
-    # 使用基于 PROJECT_ROOT 的绝对路径
-    PAN123_ACCESS_TOKEN_FILE = os.getenv(
-        "PAN123_ACCESS_TOKEN_FILE", str(PROJECT_ROOT / "config" / "access_token.txt")
-    )
+    # 直接从环境变量获取 Access Token 字符串
+    PAN123_ACCESS_TOKEN = os.getenv("PAN123_ACCESS_TOKEN", "")
 
     # Image Configuration
     SUPPORTED_IMAGE_EXTENSIONS = {

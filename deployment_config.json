@@ -25,7 +25,7 @@
       }
     },
     "vm_pyautogui": {
-      "enabled": false,
+      "enabled": true,
       "implementation_class": "utils.resource_pools.vm_pool.VMPoolImpl",
       "config": {
         "num_vms": 2,
@@ -62,7 +62,7 @@
       }
     },
     "rag_hybrid": {
-      "enabled": true,
+      "enabled": false,
       "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
       "config": {
         "num_rag_workers": 50,

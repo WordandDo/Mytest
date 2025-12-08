@@ -27,13 +27,14 @@ class CloudStorageService:
         return self._pan_client
     
     def _get_access_token(self) -> str:
-        """Get access token from file"""
-        token_file_path = Path(self.config.PAN123_ACCESS_TOKEN_FILE)
-        if not token_file_path.exists():
-            raise FileNotFoundError(f"Access token file not found: {token_file_path}")
-        
-        with open(token_file_path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
+        """Get access token directly from configuration"""
+        token = self.config.PAN123_ACCESS_TOKEN
+        if not token:
+            raise ValueError(
+                "PAN123_ACCESS_TOKEN is not set. Please set this environment variable "
+                "with your 123Pan access token string."
+            )
+        return token
     
     def _extract_file_id(self, result: dict) -> str:
         """Extract file ID from upload result"""

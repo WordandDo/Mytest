@@ -1,5 +1,5 @@
 {
-  "server_name": "search_tools Agent Gateway",
+  "server_name": "PyAutoGUI + Search Tools Gateway",
   "port": 8080,
   "debug": true,
   "modules": [
@@ -9,11 +9,14 @@
       "tool_groups": ["system_resource"]
     },
     {
-      "//": "新增：搜索工具组（无状态 Utility 类型）",
-      "resource_type": "utility",
+      "//": "PyAutoGUI 虚拟机环境配置",
+      "resource_type": "vm_pyautogui",
       "tool_groups": [
-        "search_tools"
+        "pyautogui_lifecycle",
+        "desktop_action_pyautogui",
+        "pyautogui_observation"
       ]
     }
+    
   ]
 }
