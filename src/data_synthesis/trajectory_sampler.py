@@ -8,6 +8,7 @@ import openai
 import json
 import os
 import bdb
+import re
 from typing import Dict, List, Any, Optional, Tuple
 
 from models import TrajectoryNode
@@ -28,10 +29,6 @@ class GenericTrajectorySampler:
                  config: SynthesisConfig):
         """
         Initialize Generic Trajectory Sampler
-        
-        Args:
-            environment: Environment instance (any type)
-            config: Synthesis configuration
         """
         self.environment = environment
         self.config = config
@@ -69,8 +66,6 @@ class GenericTrajectorySampler:
                     "parameters": tool.parameters
                 })
         
-        # 添加调试日志以确认加载的工具
-        print(f"DEBUG: Loaded Tools: {[t['name'] for t in tools]}")
         return tools
     
     def _generate_tool_descriptions(self) -> str:
@@ -94,15 +89,7 @@ class GenericTrajectorySampler:
         return "\n".join(descriptions)
     
     def sample_trajectory_tree(self, seed_data: str) -> Dict[str, TrajectoryNode]:
-        """
-        Sample trajectory tree starting from seed
-        
-        Args:
-            seed_data: Starting point data (string, can be any content: entity name, URL, question description, text, etc.)
-            
-        Returns:
-            Complete trajectory tree
-        """
+        """Sample trajectory tree starting from seed"""
         print(f"\n{'='*60}")
         print(f"Starting Trajectory Tree Sampling")
         print(f"Seed Content: {seed_data}")
@@ -112,7 +99,6 @@ class GenericTrajectorySampler:
         print(f"{'='*60}\n")
         
         # Create root node
-        # root_id format: node_d{depth}_t{total_nodes}_b{branch_number}
         root_id = f"d0_t0_b0"
         observation = f"Starting point: {seed_data}"
         if self.config.seed_description:
@@ -135,7 +121,8 @@ class GenericTrajectorySampler:
         
         print(f"\n✅ Trajectory Tree Sampling Completed!")
         print(f"   Total Nodes: {len(self.nodes)}")
-        print(f"   Max Depth: {max(node.depth for node in self.nodes.values())}")
+        max_d = max(node.depth for node in self.nodes.values()) if self.nodes else 0
+        print(f"   Max Depth: {max_d}")
         
         return self.nodes
     
@@ -143,35 +130,28 @@ class GenericTrajectorySampler:
         """Recursively expand trajectory tree"""
         current_node = self.nodes[node_id]
         
-        # Check depth limit
         if current_node.depth >= self.config.max_depth:
             return
         
         print(f"\n🌳 Expanding node {node_id} (depth: {current_node.depth})")
         
-        # Dynamically adjust branching factor based on depth
+        # Dynamically adjust branching factor
         if current_node.depth >= self.config.depth_threshold:
             current_branching_factor = 1
-            print(f"   ⚠️  Depth {current_node.depth} >= threshold {self.config.depth_threshold}, branching factor reduced to 1")
         else:
             current_branching_factor = self.config.branching_factor
         
-        # Sample branching_factor times for current node
         for branch_idx in range(current_branching_factor):
             try:
-                # Generate next action and intent
                 action, intent = self._generate_next_action(current_node, seed_data)
                 
                 if action is None:
                     print(f"   Branch {branch_idx + 1}: Unable to generate valid action, skipping")
                     continue
                 
-                # Execute action to get observation
-                print("action", action)
+                print(f"   Action Generated: {action.get('tool_name')}")
                 observation = self._execute_action(action)
                 
-                # Create new node
-                # child_id format: node_d{depth}_t{total_nodes}_b{branch_number}
                 child_depth = current_node.depth + 1
                 total_nodes = len(self.nodes)
                 child_id = f"d{child_depth}_t{total_nodes}_b{branch_idx}"
@@ -190,28 +170,46 @@ class GenericTrajectorySampler:
                 print(f"   ✓ Branch {branch_idx + 1}: Created node {child_id}")
                 print(f"     Intent: {intent}")
                 print(f"     Action: {action.get('tool_name', 'unknown')}")
-                print(f"     Parameters: {action.get('parameters', {})}")
-                print(f"     Observation: {observation[:100]}...")
+                # Safe slice for logging (now guaranteed to be string)
+                obs_preview = observation[:100] + "..." if len(observation) > 100 else observation
+                print(f"     Observation: {obs_preview}")
                 
-                # Recursively expand child node
                 self._expand_tree(child_id, seed_data)
                 
             except Exception as e:
                 if isinstance(e, bdb.BdbQuit):
                     raise e
                 print(f"   ✗ Branch {branch_idx + 1} failed: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
     
+    def _clean_json_string(self, content: str) -> str:
+        """
+        [新增] 清洗 LLM 返回的字符串，提取有效的 JSON 部分
+        """
+        # 1. 移除 Markdown 代码块标记 ```json ... ```
+        content = re.sub(r'^```json\s*', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^```\s*', '', content, flags=re.MULTILINE)
+        content = re.sub(r'\s*```$', '', content, flags=re.MULTILINE)
+        
+        # 2. 尝试提取第一个 { ... } 或 [ ... ]
+        # 这能解决 "Here is the JSON: {...}" 这种前缀问题
+        try:
+            # 寻找第一个左大括号或左中括号
+            match = re.search(r'(\{.*\}|\[.*\])', content, re.DOTALL)
+            if match:
+                return match.group(1)
+        except:
+            pass
+            
+        return content.strip()
+
     def _generate_next_action(self, 
                               current_node: TrajectoryNode, 
                               seed_data: str) -> Tuple[Optional[Dict[str, Any]], str]:
-        """
-        Generate next action and intent based on current state
-        """
-        # Build history trajectory
+        """Generate next action and intent based on current state"""
         history = self._build_history(current_node)
-        
-        # Build prompt (generic version, based on configuration)
         prompt = self._build_action_generation_prompt(seed_data, history, current_node.observation)
         
         retry = 0
@@ -221,17 +219,33 @@ class GenericTrajectorySampler:
                     model=self.config.model_name,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.7 + retry * 0.1,
+                    # 某些 OSS 模型不支持 response_format="json_object"，如果报错可尝试移除此行
                     response_format={"type": "json_object"}
                 )
                 
-                result = json.loads(response.choices[0].message.content)
+                content = response.choices[0].message.content
+                if not content:
+                    raise ValueError("Empty response from LLM")
+                
+                # [关键修复] 清洗并解析 JSON
+                cleaned_content = self._clean_json_string(content)
+                result = json.loads(cleaned_content)
+                
+                # [关键修复] 处理返回列表的情况 (修复 'list' object has no attribute 'get')
+                if isinstance(result, list):
+                    if len(result) > 0 and isinstance(result[0], dict):
+                        result = result[0]
+                        print("      Notice: LLM returned a list, using first element.")
+                    else:
+                        raise ValueError("LLM returned an invalid list format.")
+                
                 intent = result.get("intent", "")
                 action = result.get("action", {})
                 
-                # Validate action format
                 if self._validate_action(action):
                     return action, intent
                 
+                print(f"      Warning: Invalid action format (attempt {retry + 1})")
                 retry += 1
                 
             except Exception as e:
@@ -241,17 +255,14 @@ class GenericTrajectorySampler:
         return None, ""
     
     def _build_action_generation_prompt(self, seed_data: str, history: str, current_observation: str) -> str:
-        """Build action generation prompt (dynamically generated based on configuration)"""
+        """Build action generation prompt"""
         
-        # Try to get system prompt from environment (if supported)
         system_instruction = ""
         if hasattr(self.environment, "get_system_prompt"):
-            # Get environment-specific prompt (including tool usage strategy)
             system_instruction = self.environment.get_system_prompt(task_question=f"Exploration Task: {seed_data}")
         else:
             system_instruction = "You are an intelligent Agent using available tools for exploration and reasoning."
         
-        # Use environment prompt to replace default opening
         prompt = f"""{system_instruction}
 
 [Starting Point Information]
@@ -267,45 +278,36 @@ Based on the starting point content and available tools, conduct systematic expl
 
 """
         
-        # Add user-defined sampling tips
         if self.config.sampling_tips:
             prompt += f"""[Exploration Strategy and Focus]
 {self.config.sampling_tips}
 
 """
         
-        # Add history trajectory
         prompt += f"""Current History Trajectory:
 {history}
 
 Current Observation:
 {current_observation}
 
-"""
-        
-        # Add tool descriptions
-        prompt += f"""Available Tools:
+Available Tools:
 {self.tool_descriptions}
 
 """
         
-        # Add QA examples (if any)
         if self.config.qa_examples:
-            prompt += """Reference Examples (to understand expected data types):\n"""
-            for i, example in enumerate(self.config.qa_examples[:2], 1):  # Show only first 2
-                prompt += f"""
-Example {i}:
+            prompt += """Reference Examples:\n"""
+            for i, example in enumerate(self.config.qa_examples[:2], 1):
+                prompt += f"""Example {i}:
 Question: {example.get('question', '')}
 Answer: {example.get('answer', '')}
 """
-                if 'reasoning' in example:
-                    prompt += f"Reasoning: {example['reasoning']}\n"
         
-        # Add output format requirements
         prompt += """
 Based on the current state and available tools, select an appropriate tool and parameters, and generate the next action and intent.
 
-Return JSON format:
+IMPORTANT: Return ONLY a valid JSON object. Do not wrap it in markdown blocks.
+Format:
 {
     "intent": "The intent and reason for executing this action",
     "action": {
@@ -314,23 +316,21 @@ Return JSON format:
     }
 }
 """
-        
         return prompt
     
     def _validate_action(self, action: Dict[str, Any]) -> bool:
-        """Validate whether action format is correct (generic version)"""
+        """Validate whether action format is correct"""
         if not isinstance(action, dict):
             return False
         
         tool_name = action.get("tool_name", "")
         parameters = action.get("parameters", {})
         
-        # 检查工具是否可用
         available_tool_names = [t['name'] for t in self.available_tools]
         if tool_name not in available_tool_names:
             return False
         
-        # 查找工具定义
+        # Find tool definition
         tool_def = None
         for t in self.available_tools:
             if t['name'] == tool_name:
@@ -340,7 +340,7 @@ Return JSON format:
         if not tool_def:
             return False
         
-        # 验证必需参数
+        # Validate required parameters
         for param in tool_def['parameters']:
             if param.get('required', False):
                 if param['name'] not in parameters:
@@ -349,13 +349,22 @@ Return JSON format:
         return True
     
     def _execute_action(self, action: Dict[str, Any]) -> str:
-        """Execute action and return observation"""
+        """Execute action and return observation (Always returns String)"""
         tool_name = action["tool_name"]
         parameters = action["parameters"]
         
         try:
             result = self.environment.execute_tool(tool_name, parameters)
-            return result
+            
+            # 兼容 MCP 环境的字典格式 {'text': ..., 'images': ...}
+            if isinstance(result, dict):
+                # 1. 优先提取文本，忽略图片
+                if "text" in result:
+                    return str(result["text"])
+                # 2. 如果没有text字段，序列化整个字典
+                return json.dumps(result, ensure_ascii=False)
+                
+            return str(result)
         except Exception as e:
             return f"[Error] Action execution failed: {str(e)}"
     
@@ -379,7 +388,9 @@ Return JSON format:
             history_str += f"  Intent: {n.intent}\n"
             if n.action:
                 history_str += f"  Action: {n.action.get('tool_name', 'unknown')}\n"
-            history_str += f"  Observation: {n.observation[:200]}...\n"
+            
+            # Ensure observation is treated as string for slicing
+            obs_str = str(n.observation)
+            history_str += f"  Observation: {obs_str[:200]}...\n"
         
         return history_str
-
