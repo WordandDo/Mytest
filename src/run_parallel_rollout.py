@@ -570,6 +570,9 @@ if __name__ == "__main__":
     # 额外配置 (Agent)
     parser.add_argument("--model_name", type=str, default="gpt-4.1-2025-04-14", help="Agent model name")
     parser.add_argument("--max_turns", type=int, default=15, help="Max turns per task")
+    parser.add_argument("--prompt_type", type=str, default="generic",
+                        choices=["generic", "no_tool", "sparse", "hybrid"],
+                        help="Prompt type for RAG environment: generic, no_tool, sparse, or hybrid")
     parser.add_argument(
         "--evaluation_metric",
         type=str,
@@ -588,6 +591,7 @@ if __name__ == "__main__":
         "mcp_server_url": args.mcp_server_url,
         "resource_api_url": args.resource_api_url,
         "gateway_config_path": args.gateway_config_path,
+        "prompt_type": args.prompt_type,
     }
     
     config = ParallelRolloutConfig(

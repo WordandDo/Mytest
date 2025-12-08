@@ -1,0 +1,12 @@
+{
+  "server_name": "RAG No-Tool Agent Gateway",
+  "port": 8080,
+  "debug": true,
+  "modules": [
+    {
+      "//": "系统基础工具（必需）",
+      "resource_type": "system",
+      "tool_groups": ["system_resource"]
+    }
+  ]
+}

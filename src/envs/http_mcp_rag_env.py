@@ -5,6 +5,10 @@ from .http_mcp_env import HttpMCPEnv
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# System Prompts
+# =============================================================================
+
 SYSTEM_PROMPT_GENERIC = """You are a helpful assistant. You need to use tools to solve the problem.
 You must use tool to retrieve information to answer and verify. Don't answer by your own knowledge.
 
@@ -15,6 +19,65 @@ You must use tool to retrieve information to answer and verify. Don't answer by 
 4. You are encouraged to perform multiple tool-use to get the final answer. If some tool call doesn't output useful response, try other one.
 5. You need to use the information you retrieve carefully and accurately, and avoid making incorrect associations or assumptions.
 6. After several (more than 10) tool-use, if you still can't get the final answer, you can answer by your own knowledge.
+
+## Answer Strategy
+The final answer only contains the short answer to the question (few words), no other words like reasoning content.
+**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
+"""
+
+# 1. 不使用任何工具的纯粹版本
+SYSTEM_PROMPT_NO_TOOLS = """You are a helpful assistant.
+You must answer the question using ONLY your own knowledge. Do not use any external tools or retrieval functions.
+
+## Answer Strategy
+The final answer only contains the short answer to the question (few words), no other words like reasoning content.
+**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
+"""
+
+# 2. 只使用 Sparse (BM25) 的 Prompt
+SYSTEM_PROMPT_SPARSE = """You are a helpful assistant. You need to use tools to solve the problem.
+You must use the sparse retrieval tool to answer and verify. Don't answer by your own knowledge.
+
+## Tool Usage Strategy
+1. **Focus on Keywords**: You are using a Sparse Retrieval system (e.g., BM25). It relies on matching exact keywords.
+2. **When to use**: This is most effective for finding specific entities, precise terminology, IDs, or exact phrases.
+3. **Query Formulation**: Construct queries with the specific keywords you expect to find in the target document. Avoid vague or overly conceptual queries.
+4. Break complex problems into logical steps.
+5. Verify findings through different approaches when possible.
+
+## Answer Strategy
+The final answer only contains the short answer to the question (few words), no other words like reasoning content.
+**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
+"""
+
+# 3. 混合版本 (明确区分 Sparse 优势)
+SYSTEM_PROMPT_HYBRID = """You are a helpful assistant. You need to use tools to solve the problem.
+You have access to a Hybrid Retrieval system consisting of both Sparse (keyword) and Dense (semantic) retrievers.
+
+## Tool Usage Strategy
+You must choose the appropriate retrieval method based on the nature of your query.
+
+### 1. When to use Sparse Retrieval (Keyword/BM25)
+**Priority**: High for specific details.
+**Advantages**: Precise, exact match.
+**Use Cases**:
+- Searching for **exact names**, **IDs**, **codes**, or **specific numbers**.
+- When the query contains rare technical terms or jargon.
+- When you need to verify the exact presence of a phrase.
+- If Dense retrieval returns hallucinated or irrelevant conceptual matches.
+
+### 2. When to use Dense Retrieval (Semantic/Vector)
+**Priority**: High for conceptual questions.
+**Advantages**: Understands meaning, handles synonyms and paraphrasing.
+**Use Cases**:
+- Searching for **concepts**, **summaries**, or **explanations**.
+- When you don't know the exact keywords but know the meaning.
+- Exploring a topic broadly.
+
+### General Guidelines
+1. Break complex problems into logical steps.
+2. If one method fails, try the other. For example, if a specific keyword search returns nothing, try a broader semantic search.
+3. Use the information you retrieve carefully and accurately.
 
 ## Answer Strategy
 The final answer only contains the short answer to the question (few words), no other words like reasoning content.
@@ -42,6 +105,9 @@ class HttpMCPRagEnv(HttpMCPEnv):
             # Use a RAG-specific config file if it exists, otherwise use default
             kwargs["gateway_config_path"] = "gateway_config.json"
 
+        # Store prompt_type for later use in get_system_prompt
+        self.prompt_type = kwargs.get("prompt_type", "generic")
+
         # Initialize parent class
         super().__init__(
             model_name=model_name,
@@ -59,19 +125,35 @@ class HttpMCPRagEnv(HttpMCPEnv):
 
     def get_system_prompt(self, task_question: Optional[str] = None, **kwargs) -> str:
         """
-        Override to use RAG-specific system prompt
+        Override to use RAG-specific system prompt.
 
         Args:
             task_question: The current task question (optional)
-            **kwargs: Additional keyword arguments
+            **kwargs: Additional keyword arguments.
+                      Supports 'prompt_type': 'generic', 'no_tool', 'sparse', 'hybrid'
 
         Returns:
             The customized system prompt for RAG tasks
         """
-        # Start with the RAG-specific prompt
-        prompt = SYSTEM_PROMPT_GENERIC
+        # Use instance prompt_type first, then check kwargs, default to "generic"
+        prompt_type = kwargs.get("prompt_type", self.prompt_type)
 
-        # Add tool descriptions
+        # Select base prompt
+        if prompt_type == "no_tool":
+            prompt = SYSTEM_PROMPT_NO_TOOLS
+            # For no_tool, we skip adding tool descriptions
+            if task_question:
+                prompt += f"\n\n## Current Task\n{task_question}"
+            return prompt
+
+        elif prompt_type == "sparse":
+            prompt = SYSTEM_PROMPT_SPARSE
+        elif prompt_type == "hybrid":
+            prompt = SYSTEM_PROMPT_HYBRID
+        else:
+            prompt = SYSTEM_PROMPT_GENERIC
+
+        # Add tool descriptions (only for tool-enabled prompts)
         tool_descriptions = self.get_tool_descriptions()
         if tool_descriptions:
             prompt += f"\n\n## Available Tools\n{tool_descriptions}"

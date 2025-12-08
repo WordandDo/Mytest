@@ -20,6 +20,7 @@ export OUTPUT_DIR="results/benchmark_sparse_only"
 export DATA_PATH="src/data/bamboogle.json" # 或 rag_demo.jsonl
 export NUM_ROLLOUTS=10
 export GATEWAY_CONFIG_PATH="gateway_config_rag_sparse_only.json"
+export PROMPT_TYPE="sparse"
 
 ./run_rag_benchmark.sh
 
