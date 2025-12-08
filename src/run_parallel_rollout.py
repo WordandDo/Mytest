@@ -251,29 +251,33 @@ def run_parallel_rollout(
         all_task_ids = set()
         for metric_results in all_benchmark_results.values():
             for eval_result in metric_results:
-                all_task_ids.add(eval_result.task_id)
+                # 修复 1: EvaluationResult 使用 item_id 而不是 task_id
+                all_task_ids.add(eval_result.item_id)
 
         # 为每个任务构建评分记录
         detailed_scores = []
         for task_id in sorted(all_task_ids):
             # 获取该任务在第一个指标中的基本信息（预测答案和真实答案）
             first_metric = evaluation_metrics[0]
-            first_result = next((r for r in all_benchmark_results[first_metric] if r.task_id == task_id), None)
+            # 修复 2: 过滤时使用 r.item_id
+            first_result = next((r for r in all_benchmark_results[first_metric] if r.item_id == task_id), None)
 
             if first_result is None:
                 continue
 
             score_record = {
                 "task_id": task_id,
-                "predicted_answer": first_result.predicted,
-                "ground_truth": first_result.expected,
+                # 修复 3: 属性名为 prediction 和 ground_truth
+                "predicted_answer": first_result.prediction, 
+                "ground_truth": first_result.ground_truth,
                 "scores": {},  # 存储所有指标的分数
                 "is_correct": {}  # 存储每个指标是否正确
             }
 
             # 收集该任务在所有指标下的分数
             for metric in evaluation_metrics:
-                metric_result = next((r for r in all_benchmark_results[metric] if r.task_id == task_id), None)
+                # 修复 4: 过滤时使用 r.item_id
+                metric_result = next((r for r in all_benchmark_results[metric] if r.item_id == task_id), None)
                 if metric_result:
                     score_record["scores"][metric] = metric_result.score
                     score_record["is_correct"][metric] = metric_result.score > 0

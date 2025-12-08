@@ -19,7 +19,7 @@ echo "✅ Gateway started with PID $GATEWAY_PID"
 echo "📊 Running Benchmark (Hybrid)..."
 export OUTPUT_DIR="results/benchmark_hybrid"
 export DATA_PATH="src/data/bamboogle.json" # 或 rag_demo.jsonl
-export NUM_ROLLOUTS=10
+export NUM_ROLLOUTS=5
 export GATEWAY_CONFIG_PATH="gateway_config_rag_hybrid.json"
 
 ./run_rag_benchmark.sh
