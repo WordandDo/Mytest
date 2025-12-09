@@ -1,0 +1,10 @@
+{"tool_name": "tool_0", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.766628", "success": false, "error_message": "Test error", "duration_ms": 0.0, "args": null}
+{"tool_name": "tool_1", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.766731", "success": true, "error_message": null, "duration_ms": 10.0, "args": null}
+{"tool_name": "tool_2", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.766746", "success": true, "error_message": null, "duration_ms": 20.0, "args": null}
+{"tool_name": "tool_0", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.766882", "success": true, "error_message": null, "duration_ms": 30.0, "args": null}
+{"tool_name": "tool_1", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.766892", "success": true, "error_message": null, "duration_ms": 40.0, "args": null}
+{"tool_name": "tool_2", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.766897", "success": false, "error_message": "Test error", "duration_ms": 50.0, "args": null}
+{"tool_name": "tool_0", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.767011", "success": true, "error_message": null, "duration_ms": 60.0, "args": null}
+{"tool_name": "tool_1", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.767019", "success": true, "error_message": null, "duration_ms": 70.0, "args": null}
+{"tool_name": "tool_2", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.767024", "success": true, "error_message": null, "duration_ms": 80.0, "args": null}
+{"tool_name": "tool_0", "task_id": "test_task", "timestamp": "2025-12-09T22:26:39.767093", "success": true, "error_message": null, "duration_ms": 90.0, "args": null}

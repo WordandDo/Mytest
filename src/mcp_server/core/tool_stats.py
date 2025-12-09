@@ -63,22 +63,29 @@ class ToolStatsCollector:
         self.save_interval = save_interval
         self._call_count = 0
 
+        # 待写入的记录缓冲区（锁外写入）
+        self._pending_writes: List[ToolCallRecord] = []
+
         # 实时记录文件（追加模式）
         self._realtime_log_file = self.output_dir / "realtime_calls.jsonl"
 
-        # 如果启用实时保存，创建/清空日志文件
+        # 如果启用实时保存，创建/清空日志文件（锁外操作）
         if self.enable_realtime_save:
-            # 检查是否存在旧的实时日志
-            if self._realtime_log_file.exists():
-                # 备份旧文件
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_file = self.output_dir / f"realtime_calls_backup_{timestamp}.jsonl"
-                self._realtime_log_file.rename(backup_file)
-                logger.info(f"Backed up previous realtime log to: {backup_file}")
+            try:
+                # 检查是否存在旧的实时日志
+                if self._realtime_log_file.exists():
+                    # 备份旧文件
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    backup_file = self.output_dir / f"realtime_calls_backup_{timestamp}.jsonl"
+                    self._realtime_log_file.rename(backup_file)
+                    logger.info(f"Backed up previous realtime log to: {backup_file}")
 
-            # 创建新的实时日志文件
-            self._realtime_log_file.touch()
-            logger.info(f"Realtime logging enabled: {self._realtime_log_file}")
+                # 创建新的实时日志文件
+                self._realtime_log_file.touch()
+                logger.info(f"Realtime logging enabled: {self._realtime_log_file}")
+            except Exception as e:
+                logger.error(f"Failed to initialize realtime log file: {e}")
+                self.enable_realtime_save = False
 
         logger.info(f"ToolStatsCollector initialized with output directory: {self.output_dir}")
 
@@ -92,6 +99,10 @@ class ToolStatsCollector:
         args: Optional[Dict[str, Any]] = None
     ):
         """记录一次工具调用"""
+        # 准备需要写入的记录（锁外）
+        records_to_write = []
+        should_write = False
+
         with self._lock:
             # 创建记录
             record = ToolCallRecord(
@@ -123,25 +134,45 @@ class ToolStatsCollector:
 
             # 记录日志
             status = "✓" if success else "✗"
+            duration_str = f"Duration: {duration_ms:.2f}ms" if duration_ms else "Duration: N/A"
             logger.info(
-                f"{status} Tool Call | Task: {task_id} | Tool: {tool_name} | "
-                f"Duration: {duration_ms:.2f}ms" if duration_ms else ""
+                f"{status} Tool Call | Task: {task_id} | Tool: {tool_name} | {duration_str}"
             )
             if not success and error_message:
                 logger.error(f"  Error: {error_message}")
 
-            # 实时保存到文件
+            # 添加到待写入缓冲区
             self._call_count += 1
-            if self.enable_realtime_save and self._call_count % self.save_interval == 0:
-                self._append_to_realtime_log(record)
+            if self.enable_realtime_save:
+                self._pending_writes.append(record)
+                # 达到保存间隔时，准备批量写入
+                if self._call_count % self.save_interval == 0:
+                    records_to_write = self._pending_writes.copy()
+                    self._pending_writes.clear()
+                    should_write = True
+
+        # 锁外执行文件 I/O（不阻塞其他线程）
+        if should_write and records_to_write:
+            self._batch_append_to_realtime_log(records_to_write)
 
     def _append_to_realtime_log(self, record: ToolCallRecord):
-        """追加记录到实时日志文件（JSONL 格式）"""
+        """追加单条记录到实时日志文件（JSONL 格式）- 已废弃，使用批量写入"""
+        self._batch_append_to_realtime_log([record])
+
+    def _batch_append_to_realtime_log(self, records: List[ToolCallRecord]):
+        """批量追加记录到实时日志文件（JSONL 格式）- 锁外执行"""
+        if not records:
+            return
+
         try:
+            # 批量写入，减少文件打开次数
             with open(self._realtime_log_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(asdict(record), ensure_ascii=False) + '\n')
+                for record in records:
+                    f.write(json.dumps(asdict(record), ensure_ascii=False) + '\n')
+            logger.debug(f"Batch wrote {len(records)} records to realtime log")
         except Exception as e:
-            logger.error(f"Failed to append to realtime log: {e}")
+            logger.error(f"Failed to batch append to realtime log: {e}")
+            # 文件写入失败不应影响主流程，只记录错误
 
     def get_task_report(self, task_id: str) -> Dict[str, Any]:
         """获取单个任务的统计报告"""
@@ -242,6 +273,9 @@ class ToolStatsCollector:
 
     def export_report(self, filename: Optional[str] = None) -> str:
         """导出完整报告到 JSON 文件"""
+        # 先刷新所有待写入的记录到文件
+        self._flush_pending_writes()
+
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"tool_stats_report_{timestamp}.json"
@@ -261,6 +295,18 @@ class ToolStatsCollector:
 
         logger.info(f"Report exported to: {filepath}")
         return str(filepath)
+
+    def _flush_pending_writes(self):
+        """刷新所有待写入的记录到文件"""
+        records_to_write = []
+        with self._lock:
+            if self._pending_writes:
+                records_to_write = self._pending_writes.copy()
+                self._pending_writes.clear()
+
+        if records_to_write:
+            self._batch_append_to_realtime_log(records_to_write)
+            logger.info(f"Flushed {len(records_to_write)} pending records to realtime log")
 
     def print_summary(self):
         """打印统计摘要到控制台"""
