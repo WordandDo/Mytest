@@ -363,8 +363,26 @@ class RAGPoolImpl(AbstractPoolManager):
         )
 
     def _validate_resource(self, entry: ResourceEntry) -> bool:
-        # 只要子进程活着，资源就有效
-        return self.server_process is not None and self.server_process.is_alive()
+        """
+        验证资源是否有效：
+        1. 子进程必须存活
+        2. 索引必须加载完成（health check 返回 ready=True）
+        """
+        if not (self.server_process and self.server_process.is_alive()):
+            return False
+
+        # 检查索引是否就绪
+        try:
+            import requests
+            resp = requests.get(f"{self.service_url}/health", timeout=2)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("ready", False)  # 只有 ready=True 才算有效
+        except Exception as e:
+            logger.debug(f"Health check failed for {entry.resource_id}: {e}")
+            return False
+
+        return False
 
     def _get_connection_info(self, entry: ResourceEntry) -> Dict[str, Any]:
         """返回直连信息给 MCP Server"""
