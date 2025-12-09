@@ -8,9 +8,8 @@ import json
 import os
 import bdb
 import hashlib
-from typing import List, Dict, Tuple, Set
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from threading import Lock
+from typing import List, Dict, Tuple, Set, Callable, Optional
+from multiprocessing import Process, Manager, Queue, Lock
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,96 +30,148 @@ from qa_synthesizer import GenericQASynthesizer
 from task_synthesizer import OSWorldTaskSynthesizer
 
 
-def process_single_seed(
-    seed_idx: int,
-    seed_data: str, 
-    config: SynthesisConfig
-) -> Tuple[int, str, List[Dict], List[Dict], str]:
+def run_synthesis_worker(
+    worker_id: str,
+    task_queue: Queue,
+    config: SynthesisConfig,
+    file_lock: Lock,
+    qa_saver: Callable[[List[Dict]], None],
+    traj_saver: Callable[[List[Dict]], None]
+):
     """
-    处理单个seed（用于并行处理）
-    
-    Args:
-        seed_idx: seed索引
-        seed_data: seed数据
-        config: 合成配置
-        
-    Returns:
-        (seed_idx, source_id, outputs_list, trajectories_list, error_msg)
-        outputs_list可以是QA对或Task（取决于output_format配置）
+    Worker function to process seeds in parallel using the Process/Queue model,
+    implementing explicit resource allocation/release for heavy resources.
     """
-    source_id = _generate_source_id(seed_data, seed_idx)
-    
-    print(f"\n{'#'*80}")
-    print(f"Worker处理 Seed {seed_idx}")
-    print(f"Source ID: {source_id}")
-    print(f"内容: {seed_data[:100]}{'...' if len(seed_data) > 100 else ''}")
-    print(f"输出格式: {config.output_format}")
-    print(f"{'#'*80}\n")
-    
-    try:
-        # 创建环境和组件
-        environment = _create_environment(config)
-        
-        sampler = GenericTrajectorySampler(
-            environment=environment,
-            config=config
-        )
-        
-        selector = GenericTrajectorySelector(config=config)
-        
-        # 根据输出格式选择合成器
-        if config.output_format == "task":
-            synthesizer = OSWorldTaskSynthesizer(config=config)
-            print(f"📦 使用OSWorld任务合成器")
-        else:
-            synthesizer = GenericQASynthesizer(config=config)
-            print(f"📦 使用QA合成器")
-        
-        # Step 1: Trajectory Sampling
-        print(f"\n📊 步骤 1/3: Trajectory Sampling")
-        trajectory_tree = sampler.sample_trajectory_tree(seed_data)
-        
-        # Step 2: Trajectory Selection
-        print(f"\n🎯 步骤 2/3: Trajectory Selection")
-        selected_trajectories = selector.select_trajectories(
-            nodes=trajectory_tree,
-            root_id=sampler.root_id,
-            seed_data=seed_data,
-            source_id=source_id,
-            max_selected_traj=config.max_selected_traj
-        )
-        
-        # Step 3: 数据合成（QA或Task）
-        if config.output_format == "task":
-            print(f"\n✨ 步骤 3/3: OSWorld Task Synthesis")
-            outputs = []
-            for task_idx, trajectory in enumerate(selected_trajectories):
-                task = synthesizer.synthesize_task(trajectory, task_idx)
-                if task:
-                    outputs.append(task.to_dict())
-            output_type = "任务"
-        else:
-            print(f"\n✨ 步骤 3/3: QA Synthesis")
-            outputs = []
-            for qa_idx, trajectory in enumerate(selected_trajectories):
-                qa = synthesizer.synthesize_qa(trajectory, qa_idx)
-                if qa:
-                    outputs.append(qa.to_dict())
-            output_type = "QA对"
-        
-        trajectories_data = [traj.to_dict() for traj in selected_trajectories]
-        
-        print(f"\n✅ Seed {seed_idx} 完成! 生成了 {len(outputs)} 个{output_type}")
-        
-        return (seed_idx, source_id, outputs, trajectories_data, "")
-        
-    except Exception as e:
-        error_msg = f"❌ Seed {seed_idx} 失败: {str(e)}"
-        print(f"\n{error_msg}")
-        import traceback
-        traceback.print_exc()
-        return (seed_idx, source_id, [], [], error_msg)
+    print(f"\n[Worker {worker_id}] Starting up...")
 
+    # 1. 初始化环境和组件 (Worker 进程独享)
+    environment = _create_environment(config)
+    
+    sampler = GenericTrajectorySampler(
+        environment=environment,
+        config=config
+    )
+    
+    selector = GenericTrajectorySelector(config=config)
+    
+    # 简化合成器初始化（原逻辑）
+    if config.output_format == "task":
+        from task_synthesizer import OSWorldTaskSynthesizer
+        synthesizer = OSWorldTaskSynthesizer(config=config)
+    else:
+        synthesizer = GenericQASynthesizer(config=config)
+
+    # 尝试启动环境连接 (建立 MCP 连接等)
+    if hasattr(environment, "env_start") and callable(environment.env_start):
+        try:
+            environment.env_start()
+        except Exception as e:
+            print(f"[Worker {worker_id}] env_start() failed: {e}")
+
+    # 检查是否需要每任务资源分配 (Heavy Resource Check)
+    env_has_heavy_resource = bool(getattr(environment, "has_heavy_resource", False) and callable(getattr(environment, "allocate_resource", None)))
+
+    # 2. 主任务循环 (Pull Model)
+    while True:
+        try:
+            # 尝试从队列获取任务，设置超时以允许进程在空闲时关闭
+            seed_task = task_queue.get(timeout=30) 
+            
+            if seed_task is None: # 哨兵值
+                print(f"[Worker {worker_id}] Received sentinel. Stopping loop.")
+                break
+        except Exception as e:
+            # Queue is empty for a long time or other error
+            print(f"[Worker {worker_id}] Error getting task: {e}")
+            break
+
+        seed_data = seed_task["seed_data"]
+        seed_idx = seed_task["seed_idx"]
+        source_id = _generate_source_id(seed_data, seed_idx)
+        
+        print(f"\n{'#'*80}")
+        print(f"[Worker {worker_id}] START Seed {seed_idx}, Source ID: {source_id}")
+        print(f"内容: {seed_data[:100]}{'...' if len(seed_data) > 100 else ''}")
+        print(f"{'#'*80}\n")
+        
+        resource_allocated = False
+        
+        try:
+            # --- 显式资源分配 (Rollout 架构的核心) ---
+            if env_has_heavy_resource:
+                print(f"[Worker {worker_id}] 🔐 Requesting heavy resource via MCP...")
+                # 使用 worker_id 作为 client ID
+                if not environment.allocate_resource(worker_id):
+                     raise RuntimeError("Failed to allocate resource via MCP")
+                resource_allocated = True
+                print(f"[Worker {worker_id}] ✅ Resource allocated.")
+            
+            # Step 1: Trajectory Sampling
+            print(f"\n📊 步骤 1/3: Trajectory Sampling")
+            trajectory_tree = sampler.sample_trajectory_tree(seed_data)
+            
+            # Step 2: Trajectory Selection
+            print(f"\n🎯 步骤 2/3: Trajectory Selection")
+            selected_trajectories = selector.select_trajectories(
+                nodes=trajectory_tree,
+                root_id=sampler.root_id,
+                seed_data=seed_data,
+                source_id=source_id,
+                max_selected_traj=config.max_selected_traj
+            )
+            
+            # Step 3: 数据合成（QA或Task）
+            outputs = []
+            output_type = "QA对" if config.output_format != "task" else "任务"
+            
+            print(f"\n✨ 步骤 3/3: {output_type} Synthesis")
+            for qa_idx, trajectory in enumerate(selected_trajectories):
+                try:
+                    if config.output_format == "task":
+                        synthesized_output = synthesizer.synthesize_task(trajectory, qa_idx)
+                    else:
+                        synthesized_output = synthesizer.synthesize_qa(trajectory, qa_idx)
+                        
+                    if synthesized_output:
+                        outputs.append(synthesized_output.to_dict())
+                except Exception as e:
+                    print(f"[Worker {worker_id}] ❌ 合成失败 (轨迹 {qa_idx}): {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+            
+            trajectories_data = [traj.to_dict() for traj in selected_trajectories]
+            
+            print(f"\n✅ Seed {seed_idx} 完成! 生成了 {len(outputs)} 个{output_type}")
+            
+            # --- 实时保存结果 (Worker 进程调用主进程传入的 Saver) ---
+            if outputs:
+                qa_saver(outputs) 
+            if trajectories_data:
+                traj_saver(trajectories_data) 
+                
+        except Exception as e:
+            error_msg = f"❌ Seed {seed_idx} 失败: {str(e)}"
+            print(f"\n{error_msg}")
+            import traceback
+            traceback.print_exc()
+            
+        finally:
+            # --- 显式资源释放 (Rollout 架构的核心) ---
+            if env_has_heavy_resource and resource_allocated:
+                print(f"[Worker {worker_id}] ♻️ Releasing resource via MCP (reset=True)...")
+                try:
+                    environment.release_resource(worker_id, reset=True)
+                except Exception as e:
+                    print(f"[Worker {worker_id}] ⚠️ Error releasing resource: {e}")
+            
+    # Worker 退出时关闭环境连接
+    if hasattr(environment, "env_close") and callable(environment.env_close):
+        environment.env_close()
+    print(f"[Worker {worker_id}] Stopped.")
+
+
+# --- Keep the helper functions _generate_source_id and _create_environment here ---
+# (As they were in the original file, just before the class definition)
 
 def _generate_source_id(seed_data: str, seed_idx: int) -> str:
     """生成source的唯一标识"""
@@ -201,11 +252,11 @@ class GenericDataSynthesis:
             self.synthesizer = GenericQASynthesizer(config=config)
             print(f"使用QA合成器（输出格式：qa）")
         
-        # 存储结果
-        self.trajectory_tree: Dict[str, TrajectoryNode] = {}
-        self.selected_trajectories: List[Trajectory] = []
-        self.synthesized_qas: List[SynthesizedQA] = []  # QA格式
-        self.synthesized_tasks: List[SynthesizedTask] = []  # Task格式
+        # 存储结果 (移除内存列表，依赖文件实时写入)
+        # self.trajectory_tree: Dict[str, TrajectoryNode] = {}
+        # self.selected_trajectories: List[Trajectory] = []
+        # self.synthesized_qas: List[SynthesizedQA] = []  # QA格式
+        # self.synthesized_tasks: List[SynthesizedTask] = []  # Task格式
         
         # 初始化输出文件路径（在run时创建）
         self.qa_file_path = None
@@ -214,8 +265,8 @@ class GenericDataSynthesis:
         # 已处理的source_id集合
         self.processed_source_ids: Set[str] = set()
         
-        # 文件写入锁（用于并行处理时的线程安全）
-        self.file_lock = Lock()
+        # 文件写入锁（在 run() 中使用 Manager.Lock() 进行初始化）
+        self.file_lock: Optional[Lock] = None
     
     def _create_environment(self) -> Environment:
         """根据配置创建相应的环境"""
@@ -271,14 +322,15 @@ class GenericDataSynthesis:
                 print(f"⚠️  读取已处理记录时出错: {e}")
                 self.processed_source_ids.clear()
     
-    def _save_qa_immediately(self, qa_dict: Dict):
-        """立即将单个QA对追加保存到文件（线程安全）"""
+    def _save_qa_immediately(self, qas_dicts: List[Dict]):
+        """立即将QA对追加保存到文件（进程安全）"""
         with self.file_lock:
             with open(self.qa_file_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(qa_dict, ensure_ascii=False) + "\n")
+                for qa_dict in qas_dicts:
+                    f.write(json.dumps(qa_dict, ensure_ascii=False) + "\n")
     
     def _save_trajectories_immediately(self, trajectories_data: List[Dict]):
-        """立即将trajectories追加保存到文件（线程安全）"""
+        """立即将trajectories追加保存到文件（进程安全）"""
         with self.file_lock:
             with open(self.traj_file_path, "a", encoding="utf-8") as f:
                 for traj in trajectories_data:
@@ -286,13 +338,13 @@ class GenericDataSynthesis:
     
     def run(self, seeds: List[str]) -> List[Dict]:
         """
-        运行完整的数据合成pipeline（支持并行处理）
+        运行完整的数据合成pipeline（使用 Process/Queue 架构）
         
         Args:
-            seeds: Seed数据列表（可以是任意类型：entity/problem/text/url等）
+            seeds: Seed数据列表
             
         Returns:
-            合成的QA对字典列表
+            合成的QA对字典列表 (为了兼容性返回空列表，实际结果已写入文件)
         """
         # 根据配置限制处理的seed数量
         if self.config.number_of_seed is not None:
@@ -312,113 +364,90 @@ class GenericDataSynthesis:
         # 初始化输出文件
         self._initialize_output_files()
         
-        all_qas = []
-        all_trajectories = []
         skipped_count = 0
         
-        # 如果并行度为1，使用串行处理
-        if self.config.max_workers == 1:
-            print("⚡ 使用串行处理模式")
-            for seed_idx, seed_data in enumerate(seeds, 1):
-                # 生成source_id并检查是否已处理
-                source_id = _generate_source_id(seed_data, seed_idx)
-                if source_id in self.processed_source_ids:
-                    skipped_count += 1
-                    print(f"\n⏭️  跳过 Seed {seed_idx}/{len(seeds)} (已处理: {source_id})")
-                    continue
-                
-                result = process_single_seed(seed_idx, seed_data, self.config)
-                seed_idx, source_id, qas, trajectories, error = result
-                
-                if error:
-                    print(f"\n{error}")
-                    continue
-                
-                # 保存QA对
-                for qa_dict in qas:
-                    all_qas.append(qa_dict)
-                    self._save_qa_immediately(qa_dict)
-                
-                # 立即保存该seed的trajectories
-                if trajectories:
-                    self._save_trajectories_immediately(trajectories)
-                
-                # 保存trajectories到内存中
-                all_trajectories.extend(trajectories)
-                
-        else:
-            # 并行处理模式
-            print(f"⚡ 使用并行处理模式（{self.config.max_workers} workers）")
+        # --- 替换 ProcessPoolExecutor 架构 ---
+        with Manager() as manager:
+            task_queue = manager.Queue()
             
-            # 过滤掉已处理的seed
+            # 进程安全锁 (用于文件 I/O)
+            self.file_lock = manager.Lock() 
+
+            # 1. 填充任务队列，并处理断点续传
             seeds_to_process = []
             for seed_idx, seed_data in enumerate(seeds, 1):
                 source_id = _generate_source_id(seed_data, seed_idx)
+                
                 if source_id in self.processed_source_ids:
                     skipped_count += 1
-                    print(f"\n⏭️  跳过 Seed {seed_idx}/{len(seeds)} (已处理: {source_id})")
+                    # print(f"\n⏭️  跳过 Seed {seed_idx}/{len(seeds)} (已处理: {source_id})")
                 else:
-                    seeds_to_process.append((seed_idx, seed_data))
-            
+                    seeds_to_process.append({
+                        "seed_idx": seed_idx,
+                        "seed_data": seed_data,
+                        "source_id": source_id,
+                    })
+
             if not seeds_to_process:
                 print("\n所有seed都已处理，无需继续")
-            else:
-                with ProcessPoolExecutor(max_workers=self.config.max_workers) as executor:
-                    # 提交所有任务
-                    future_to_seed = {
-                        executor.submit(process_single_seed, seed_idx, seed_data, self.config): (seed_idx, seed_data)
-                        for seed_idx, seed_data in seeds_to_process
-                    }
-                    
-                    # 收集结果（按完成顺序）
-                    completed = 0
-                    for future in as_completed(future_to_seed):
-                        seed_idx, seed_data = future_to_seed[future]
-                        completed += 1
-                        
-                        try:
-                            result = future.result()
-                            seed_idx, source_id, qas, trajectories, error = result
-                            
-                            if error:
-                                print(f"\n{error}")
-                                continue
-                            
-                            # 保存QA对
-                            for qa_dict in qas:
-                                all_qas.append(qa_dict)
-                                self._save_qa_immediately(qa_dict)
-                            
-                            # 立即保存该seed的trajectories
-                            if trajectories:
-                                self._save_trajectories_immediately(trajectories)
-                            
-                            # 保存trajectories到内存中
-                            all_trajectories.extend(trajectories)
-                            
-                            print(f"\n📊 进度: {completed}/{len(seeds_to_process)} seeds 已完成")
-                            
-                        except Exception as e:
-                            print(f"\n❌ Seed {seed_idx} 处理失败: {str(e)}")
-                            import traceback
-                            traceback.print_exc()
-        
-        # 保存到实例变量（用于统计）
-        self.synthesized_qas = [SynthesizedQA.from_dict(qa) for qa in all_qas]
-        # self.selected_trajectories = [Trajectory.from_dict(traj) for traj in all_trajectories]
-        # type object 'Trajectory' has no attribute 'from_dict'. Did you mean: 'to_dict'?
-        self.selected_trajectories = [Trajectory(**traj) for traj in all_trajectories]
+            
+            total_tasks = len(seeds_to_process)
+            
+            # 将任务放入队列
+            for task in seeds_to_process:
+                task_queue.put(task)
+
+            # 2. 添加哨兵值 (Poison Pill)
+            for _ in range(self.config.max_workers):
+                task_queue.put(None)
+
+            # 3. 启动 Worker 进程
+            processes = []
+            for i in range(self.config.max_workers):
+                worker_id = f"worker-{i+1}"
+                
+                # 启动 Worker 进程并传入共享资源和方法
+                proc = Process(
+                    target=run_synthesis_worker,
+                    args=(
+                        worker_id,
+                        task_queue,
+                        self.config,
+                        self.file_lock,
+                        self._save_qa_immediately, 
+                        self._save_trajectories_immediately, 
+                    )
+                )
+                proc.start()
+                processes.append(proc)
+                print(f"Started worker process: {worker_id}")
+            
+            # 4. 等待 Worker 进程完成 (Join)
+            try:
+                for proc in processes:
+                    proc.join()
+            except KeyboardInterrupt:
+                print("Main process interrupted. Terminating workers...")
+                for proc in processes:
+                    if proc.is_alive():
+                        proc.terminate()
+            
+        # 5. 清理（原代码中 cleanup 放在 finally 块中，这里保持不变）
+        # self.cleanup() # This is the final step outside the Manager block
+
+        # Final statistics based on total tasks processed (approximation)
+        newly_processed_count = total_tasks
         
         print(f"\n\n{'='*80}")
         print(f"🎉 数据合成完成!")
         print(f"{'='*80}")
         print(f"总Seed数量: {len(seeds)} 个")
         print(f"已跳过: {skipped_count} 个")
-        print(f"新处理: {len(seeds) - skipped_count} 个")
-        print(f"成功生成: {len(all_qas)} 个QA对")
+        print(f"新处理: {newly_processed_count} 个")
         print(f"{'='*80}\n")
         
-        return all_qas
+        # 返回空列表，兼容调用者
+        return []
     
     def save_results(self):
         """显示结果保存位置（QA对和trajectories已实时保存）"""
