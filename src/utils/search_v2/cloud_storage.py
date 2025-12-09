@@ -2,29 +2,32 @@ import asyncio
 import time
 import json
 import csv
+import hashlib
+import math
+import requests
 from pathlib import Path
 from typing import Dict, List, Optional, Callable
-from pan123 import Pan123
-
-# 注意：这里需要确保 pan123 库已安装
 
 from .config.settings import Config
 
 
 class CloudStorageService:
-    """Service for handling file uploads to 123Pan cloud storage"""
+    """
+    Service for handling file uploads to 123Pan cloud storage via Official Open API.
+    Implemented directly using requests to bypass SDK limitations.
+    """
+    
+    # 123云盘开放平台官方 API 地址
+    API_BASE_URL = "https://open-api.123pan.com"
     
     def __init__(self):
         self.config = Config()
-        self._pan_client: Optional[Pan123] = None
-    
-    @property
-    def pan_client(self) -> Pan123:
-        """Lazy initialization of Pan123 client"""
-        if self._pan_client is None:
-            access_token = self._get_access_token()
-            self._pan_client = Pan123(access_token)
-        return self._pan_client
+        self._access_token = self._get_access_token()
+        self._headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+            "Platform": "open_platform"
+        }
     
     def _get_access_token(self) -> str:
         """Get access token directly from configuration"""
@@ -35,37 +38,133 @@ class CloudStorageService:
                 "with your 123Pan access token string."
             )
         return token
-    
-    def _extract_file_id(self, result: dict) -> str:
-        """Extract file ID from upload result"""
-        if not isinstance(result, dict):
-            raise ValueError(f"Unexpected result type: {type(result)}")
+
+    def _calculate_md5(self, file_path: Path) -> str:
+        """Calculate file MD5 hash"""
+        hash_md5 = hashlib.md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+    def _api_request(self, method: str, endpoint: str, data: dict = None, max_retries: int = 3) -> dict:
+        """Helper to make API requests with error handling"""
+        url = f"{self.API_BASE_URL}{endpoint}"
         
-        # Try different possible structures
-        if "detail" in result and isinstance(result["detail"], dict) and "fileID" in result["detail"]:
-            return result["detail"]["fileID"]
+        for attempt in range(max_retries):
+            try:
+                if method.upper() == "GET":
+                    response = requests.get(url, params=data, headers=self._headers, timeout=30)
+                elif method.upper() == "PUT":
+                    # PUT通常用于上传二进制流，这里做特殊处理，data作为body
+                    response = requests.put(url, data=data, timeout=60)
+                    if response.status_code == 200:
+                        return {} # PUT通常只看状态码
+                    response.raise_for_status()
+                else:
+                    response = requests.post(url, json=data, headers=self._headers, timeout=30)
+                
+                # 解析响应
+                if method.upper() != "PUT":
+                    res_json = response.json()
+                    if res_json.get("code") != 0:
+                        raise ValueError(f"API Error ({res_json.get('code')}): {res_json.get('message')}")
+                    return res_json.get("data", {})
+                
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(1)
+        return {}
+
+    def _upload_logic_sync(self, file_path: Path, parent_id: int) -> Dict[str, str]:
+        """
+        Synchronous implementation of the upload logic chain:
+        V2 Create -> V1 Upload -> V1 Complete (Polling) -> Get Direct Link
+        """
+        file_size = file_path.stat().st_size
+        file_name = file_path.name
+        file_md5 = self._calculate_md5(file_path)
         
-        if "fileID" in result:
-            return result["fileID"]
+        # --- Step 1: Create Task (使用 V2 接口) ---
+        create_data = {
+            "parentFileID": parent_id,
+            "filename": file_name,
+            "etag": file_md5,
+            "size": file_size,
+            "duplicate": 1  # 1=自动重命名
+        }
+        # 注意：这里必须用 V2
+        file_meta = self._api_request("POST", "/upload/v2/file/create", create_data)
         
-        raise KeyError(f"fileID not found in result: {result}")
-    
-    def _ensure_trailing_slash_removed(self, url: str) -> str:
-        """Remove trailing slash from URL"""
-        return url.rstrip("/")
-    
+        # 处理秒传
+        if file_meta.get("reuse"):
+            file_id = file_meta.get("fileID")
+            # 秒传直接获取直链
+            return self._get_direct_link_result(file_name, file_id)
+
+        # --- Step 2: Upload Chunks (使用 V1 接口获取地址) ---
+        preupload_id = file_meta["preuploadID"]
+        slice_size = file_meta["sliceSize"]
+        num_slices = math.ceil(file_size / slice_size)
+        
+        with open(file_path, "rb") as f:
+            for i in range(1, num_slices + 1):
+                # 1. 获取上传 URL (必须用 V1)
+                get_url_data = {"preuploadID": preupload_id, "sliceNo": i}
+                url_resp = self._api_request("POST", "/upload/v1/file/get_upload_url", get_url_data)
+                upload_url = url_resp["presignedURL"]
+                
+                # 2. 上传数据
+                chunk = f.read(slice_size)
+                # PUT请求不使用通用Header，直接发二进制
+                requests.put(upload_url, data=chunk).raise_for_status()
+
+        # --- Step 3: Complete Upload (使用 V1 接口) ---
+        complete_data = {"preuploadID": preupload_id}
+        result = self._api_request("POST", "/upload/v1/file/upload_complete", complete_data)
+        
+        # --- Step 4: Handle Async Processing (轮询) ---
+        if result.get("async") and not result.get("completed"):
+            print(f"[INFO] Server processing asynchronously for {file_name}...")
+            file_id = None
+            # 轮询最多 60秒
+            for _ in range(30):
+                time.sleep(2)
+                async_res = self._api_request("POST", "/upload/v1/file/upload_async_result", complete_data)
+                if async_res.get("completed"):
+                    file_id = async_res.get("fileID")
+                    break
+            
+            if not file_id:
+                raise RuntimeError("Upload processing timed out (Async result not completed)")
+        else:
+            file_id = result.get("fileID")
+
+        if not file_id:
+            raise RuntimeError(f"Failed to get fileID after upload. Result: {result}")
+
+        # --- Step 5: Get Direct Link ---
+        return self._get_direct_link_result(file_name, file_id)
+
+    def _get_direct_link_result(self, file_name: str, file_id: str) -> Dict[str, str]:
+        """Call direct-link API to get the download URL"""
+        # 兼容 fileID 为 int 或 str
+        link_res = self._api_request("GET", "/api/v1/direct-link/url", {"fileID": file_id})
+        url = link_res.get("url")
+        
+        if not url:
+            raise ValueError(f"Failed to retrieve direct link for fileID: {file_id}")
+            
+        return {
+            "name": file_name,
+            "fileID": str(file_id),
+            "url": url
+        }
+
     async def upload_single_image(self, file_path: Path) -> Dict[str, str]:
         """
-        Upload a single image file to cloud storage
-        
-        Args:
-            file_path: Path to the image file
-            
-        Returns:
-            Dict containing name, fileID, and url
-            
-        Raises:
-            RuntimeError: If upload fails after all retries
+        Upload a single image file to cloud storage (Async Wrapper)
         """
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -75,23 +174,16 @@ class CloudStorageService:
         
         last_error = None
         
+        # Retry logic for the entire process
         for attempt in range(1, self.config.MAX_RETRIES + 1):
             try:
-                # Run the blocking upload in a thread pool
+                # Run blocking sync upload logic in a thread
                 result = await asyncio.to_thread(
-                    self.pan_client.file.upload,
-                    int(self.config.PAN123_PARENT_FILE_ID),
-                    str(file_path)
+                    self._upload_logic_sync,
+                    file_path,
+                    int(self.config.PAN123_PARENT_FILE_ID)
                 )
-                
-                file_id = self._extract_file_id(result)
-                url = f"{self._ensure_trailing_slash_removed(self.config.PAN123_BASE_URL)}/{file_id}"
-                
-                return {
-                    "name": file_path.name,
-                    "fileID": file_id,
-                    "url": url
-                }
+                return result
                 
             except Exception as e:
                 last_error = e
@@ -100,20 +192,12 @@ class CloudStorageService:
                 if attempt < self.config.MAX_RETRIES:
                     await asyncio.sleep(self.config.RETRY_SLEEP)
         
-        # All retries failed
         raise RuntimeError(f"Upload permanently failed for {file_path} — last error: {last_error}")
     
     async def upload_multiple_images(self, file_paths: List[Path], 
                                    progress_callback: Optional[Callable] = None) -> List[Dict[str, str]]:
         """
         Upload multiple image files to cloud storage
-        
-        Args:
-            file_paths: List of file paths to upload
-            progress_callback: Optional callback for progress updates
-            
-        Returns:
-            List of upload results
         """
         results = []
         total_files = len(file_paths)
@@ -128,7 +212,6 @@ class CloudStorageService:
                 print(f"[OK] {file_path.name} -> {result['url']}")
             except Exception as e:
                 print(f"[ERROR] Failed to upload {file_path.name}: {e}")
-                # Continue with other files even if one fails
                 results.append({
                     "name": file_path.name,
                     "fileID": "",
