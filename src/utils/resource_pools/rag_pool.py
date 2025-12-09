@@ -292,6 +292,10 @@ def _background_load_index(config: Dict[str, Any]):
 
     except Exception as e:
         error_msg = str(e)
+        # 强制打印堆栈跟踪，确保即使日志丢失也能看到
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        
         logging.critical(f"❌ [Background] Critical failure: {error_msg}", exc_info=True)
         loading_state["ready"] = False
         loading_state["status"] = "error"
@@ -331,8 +335,6 @@ class RAGPoolImpl(AbstractPoolManager):
         
         # 2. 等待服务就绪 (简单的轮询检查)
         import requests
-        # [修改] 尝试从配置中读取 server_start_retries，默认为 30
-        # 这里的 self.rag_config 就是 deployment_config.json 中 "config" 下的内容
         retries = int(self.rag_config.get("server_start_retries", 30))
         
         logger.info(f"Waiting for RAG Server to be ready (timeout={retries}s)...")
@@ -341,14 +343,40 @@ class RAGPoolImpl(AbstractPoolManager):
                 resp = requests.get(f"{self.service_url}/health", timeout=1)
                 if resp.status_code == 200 and resp.json().get("ready"):
                     logger.info("✅ RAG Server is ready and serving.")
-                    break
+                    break # 成功！跳出循环，跳过 else，继续执行下方代码
             except Exception:
                 pass
+            
+            # [可选优化]：如果发现子进程已经死了，直接提前终止等待
+            if not self.server_process.is_alive():
+                logger.error("❌ Detected RAG subprocess died unexpectedly during initialization.")
+                break 
+                
             time.sleep(1)
         else:
-            logger.warning("⚠️ RAG Server started but health check failed (might still be loading index).")
+            # [关键修改] 循环耗尽仍未成功：进入此分支
+            logger.error(f"❌ RAG Server failed to start after {retries}s. Aborting initialization.")
+            
+            # 1. 打印子进程状态辅助调试
+            if self.server_process.is_alive():
+                logger.error("   Subprocess is still alive but unresponsive (Hanged/Loading slow).")
+            else:
+                logger.error(f"   Subprocess died with exit code: {self.server_process.exitcode}")
 
-        # 3. 初始化逻辑资源槽位
+            # 2. 清理残局
+            self.stop_all()
+            
+            # 3. 明确返回失败，阻止 super().initialize_pool() 执行
+            #    这样就不会创建那 50 个虚假的资源条目了
+            return False 
+
+        # [双重保险] 如果子进程中途死了（通过上面的 break 跳出），这里再拦一道
+        if not self.server_process.is_alive():
+             logger.error("❌ RAG Server process is dead. Initialization failed.")
+             self.stop_all()
+             return False
+
+        # 3. 初始化逻辑资源槽位 (只有真正成功才会执行到这里)
         return super().initialize_pool(max_workers)
 
     def _create_resource(self, index: int) -> ResourceEntry:

@@ -220,10 +220,11 @@ class GenericTrajectorySampler:
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.7 + retry * 0.1,
                     # 某些 OSS 模型不支持 response_format="json_object"，如果报错可尝试移除此行
-                    response_format={"type": "json_object"}
+                    #response_format={"type": "json_object"}
                 )
                 
                 content = response.choices[0].message.content
+                
                 if not content:
                     raise ValueError("Empty response from LLM")
                 

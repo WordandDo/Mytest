@@ -13,6 +13,15 @@ import time
 from typing import List, Dict, Callable, Optional, Set, Any, Union
 from multiprocessing import Process, Manager
 
+# ================= 🔧 新增代码开始 =================
+from dotenv import load_dotenv
+
+# 加载 .env 文件到环境变量
+# verbose=True 会在找不到文件时打印警告
+# override=True 确保 .env 中的值覆盖系统默认值（可选）
+load_dotenv(verbose=True, override=True)
+# ================= 🔧 新增代码结束 =================
+
 # 添加源码路径到 sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -77,7 +86,6 @@ def _create_environment(config: SynthesisConfig, worker_id: Optional[str] = None
         
     # 3. 通用 MCP 环境 (处理 Math, Python, Web, OSWorld 等)
     elif mode in ["mcp", "http_mcp", "math", "python", "py", "web", "osworld", "gui"]:
-        # print(f"[{worker_id}] Mapping mode '{mode}' to Generic HttpMCPEnv")
         return HttpMCPEnv(**kwargs)
         
     else:
@@ -97,14 +105,22 @@ def run_synthesis_worker(
     """
     print(f"\n[Worker {worker_id}] Starting up...")
 
-    # 1. 初始化环境 (传入 worker_id)
+    # 1. 初始化环境
     try:
         environment = _create_environment(config, worker_id=worker_id)
     except Exception as e:
         print(f"[Worker {worker_id}] ❌ Failed to create environment: {e}")
         return
 
-    # 初始化 Sampler (需要环境已创建)
+    # 2. 【关键修改】先启动环境连接，确保能获取工具列表
+    if hasattr(environment, "env_start") and callable(environment.env_start):
+        try:
+            environment.env_start()
+            # print(f"[Worker {worker_id}] Connected to Gateway") # 可选日志
+        except Exception as e:
+            print(f"[Worker {worker_id}] env_start() failed: {e}")
+
+    # 3. 【关键修改】环境连接后再初始化 Sampler
     sampler = GenericTrajectorySampler(
         environment=environment,
         config=config
@@ -117,14 +133,6 @@ def run_synthesis_worker(
         synthesizer = OSWorldTaskSynthesizer(config=config)
     else:
         synthesizer = GenericQASynthesizer(config=config)
-
-    # 启动环境连接 (建立 MCP SSE 连接)
-    if hasattr(environment, "env_start") and callable(environment.env_start):
-        try:
-            environment.env_start()
-        except Exception as e:
-            print(f"[Worker {worker_id}] env_start() failed: {e}")
-            # 连接失败通常是致命的，但在某些无状态模式下可能允许继续
 
     # 检查是否需要每任务资源分配 (Heavy Resource Check)
     # HttpMCPEnv 默认为 True, HttpMCPSearchEnv active_resources 为空，allocate 会快速返回 True
