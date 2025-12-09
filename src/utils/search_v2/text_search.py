@@ -1,5 +1,6 @@
 import asyncio
 import aiohttp
+import json
 from typing import List, Dict, Optional
 from urllib.parse import quote
 from openai import OpenAI
@@ -35,16 +36,6 @@ class TextSearchService:
                                   llm_model: Optional[str] = None) -> List[Dict[str, str]]:
         """
         Perform text search and generate integrated AI summary
-        
-        Args:
-            query: Search query
-            k: Number of results to return
-            region: Search region (e.g., 'us', 'cn')
-            lang: Search language (e.g., 'en', 'zh-CN')
-            llm_model: LLM model to use for summaries
-            
-        Returns:
-            List of dictionaries containing title, url, and summary passages from integrated content
         """
         if k is None:
             k = self.config.DEFAULT_SEARCH_RESULTS
@@ -195,9 +186,6 @@ class TextSearchService:
                                   search_results: List[Dict[str, str]], 
                                   integrated_summary: str) -> List[Dict[str, str]]:
         """Create summarized passages linked to their respective sources"""
-        # For now, return the integrated summary with the first source
-        # In a more sophisticated implementation, we could split the summary
-        # and link different parts to different sources
         return [{
             "title": "Integrated Search Summary",
             "url": f"Based on {len(search_results)} sources",
@@ -243,9 +231,39 @@ class TextSearchService:
                         {"role": "user", "content": user_content},
                     ],
                 )
+                
+                # === DEBUG LOG START ===
+                # 打印响应类型和内容预览，帮助排查 API 返回 HTML 的问题
+                print(f"\n[DEBUG] LLM Response Type: {type(response)}")
+                if isinstance(response, str):
+                    print(f"[DEBUG] Raw String Response (First 1000 chars):\n{response[:1000]}")
+                    print("-" * 60)
+                # === DEBUG LOG END ===
+
+                # 兼容性处理
+                if isinstance(response, str):
+                    if response.strip().startswith("{"):
+                        try:
+                            data = json.loads(response)
+                            if isinstance(data, dict) and "choices" in data:
+                                return data["choices"][0]["message"]["content"].strip()
+                        except:
+                            pass
+                    return response.strip()
+                
+                elif isinstance(response, dict):
+                    if "choices" in response:
+                         msg = response["choices"][0].get("message", {})
+                         if isinstance(msg, dict):
+                             return msg.get("content", "").strip()
+                         return msg.content.strip()
+
                 return response.choices[0].message.content.strip()
+                
             except Exception as e:
                 print(f"[ERROR] Integrated LLM summarization failed: {e}")
+                import traceback
+                traceback.print_exc()
                 return f"（综合摘要生成失败：{e}）"
         
         # Run the synchronous OpenAI call in a thread pool
@@ -287,7 +305,33 @@ class TextSearchService:
                         {"role": "user", "content": user_content},
                     ],
                 )
+
+                # === DEBUG LOG START ===
+                # 打印响应类型
+                # print(f"[DEBUG] Single LLM Response Type: {type(response)}")
+                if isinstance(response, str):
+                    print(f"[DEBUG] Raw String Response (First 500 chars):\n{response[:500]}")
+                # === DEBUG LOG END ===
+
+                if isinstance(response, str):
+                    if response.strip().startswith("{"):
+                        try:
+                            data = json.loads(response)
+                            if isinstance(data, dict) and "choices" in data:
+                                return data["choices"][0]["message"]["content"].strip()
+                        except:
+                            pass
+                    return response.strip()
+                
+                elif isinstance(response, dict):
+                    if "choices" in response:
+                         msg = response["choices"][0].get("message", {})
+                         if isinstance(msg, dict):
+                             return msg.get("content", "").strip()
+                         return msg.content.strip()
+                
                 return response.choices[0].message.content.strip()
+
             except Exception as e:
                 print(f"[ERROR] LLM summarization failed: {e}")
                 return f"（摘要生成失败：{e}）"

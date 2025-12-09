@@ -3,15 +3,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
-
+load_dotenv(verbose=True, override=True)
 
 class Config:
     # API Keys
     SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
     JINA_API_KEY = os.getenv("JINA_API_KEY", "")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
 
     # SerpAPI Configuration
     SERPAPI_URL = "https://serpapi.com/search"
@@ -42,7 +41,7 @@ class Config:
     # 123Pan Configuration
     PAN123_BASE_URL = os.getenv("PAN123_BASE_URL", "https://vip.123pan.cn/1820855797")
     PAN123_PARENT_FILE_ID = os.getenv(
-        "PAN123_PARENT_FILE_ID", "yk6baz03t0l000d7w33fl91aiec2g63tDIYvDdYyAIU2AvxPDqYw"
+        "PAN123_PARENT_FILE_ID"
     )
     # 直接从环境变量获取 Access Token 字符串
     PAN123_ACCESS_TOKEN = os.getenv("PAN123_ACCESS_TOKEN", "")
