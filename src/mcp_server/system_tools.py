@@ -13,7 +13,7 @@ RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 logger = logging.getLogger("SystemTools")
 
 # 注册为 "system_resource" 组
-@ToolRegistry.register_tool("system_resource")
+@ToolRegistry.register_tool("system_resource",hidden=True)
 async def allocate_batch_resources(worker_id: str, resource_types: list[str], timeout: int = 600) -> str:
     """
     [System Tool] Atomically allocate a batch of resources.
@@ -42,6 +42,47 @@ async def allocate_batch_resources(worker_id: str, resource_types: list[str], ti
             return json.dumps({"status": "error", "message": "Allocation request timed out"})
         except Exception as e:
             return json.dumps({"status": "error", "message": f"System Allocation Failed: {str(e)}"})
+
+# [新增] 单个资源分配工具
+@ToolRegistry.register_tool("system_resource",hidden=True)
+async def allocate_single_resource(worker_id: str, resource_type: str, timeout: int = 600) -> str:
+    """
+    [System Tool] Allocate a single resource of the specified type.
+    Communicates directly with the Resource API. Returns an error if the resource type is invalid or allocation fails.
+    
+    Args:
+        worker_id: The ID of the worker requesting the resource.
+        resource_type: The type of the resource to allocate (e.g., 'vm_pyautogui').
+        timeout: Allocation timeout in seconds.
+    """
+    if not resource_type:
+        return json.dumps({"status": "error", "message": "resource_type cannot be empty"})
+
+    # 将单个资源类型封装成列表，复用后端原子分配接口
+    resource_types = [resource_type]
+
+    async with httpx.AsyncClient() as client:
+        try:
+            # Gateway 代表 Client 向 Resource API 发起 HTTP 请求
+            resp = await client.post(
+                f"{RESOURCE_API_URL}/allocate",
+                json={
+                    "worker_id": worker_id, 
+                    "resource_types": resource_types,
+                    "timeout": timeout
+                },
+                timeout=timeout + 5
+            )
+            resp.raise_for_status()
+            
+            # 直接返回 Resource API 的响应（包含连接信息等）
+            return json.dumps(resp.json())
+            
+        except httpx.TimeoutException:
+            return json.dumps({"status": "error", "message": f"Single allocation request for {resource_type} timed out"})
+        except Exception as e:
+            # 这会捕获 httpx.HTTPStatusError (非 2xx 响应, 可能是资源不存在) 以及其他连接错误
+            return json.dumps({"status": "error", "message": f"System Single Allocation Failed for {resource_type}: {str(e)}"})
 
 # [新增] 统一的批量资源释放工具
 @ToolRegistry.register_tool("system_resource", hidden=True)
@@ -77,7 +118,7 @@ async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> st
     return json.dumps({"status": "completed", "details": results})
 
 # [修改] 注册获取初始 Observation 的工具
-@ToolRegistry.register_tool("system_resource")
+@ToolRegistry.register_tool("system_resource", hidden=True)
 async def get_batch_initial_observations(worker_id: str) -> str:
     """
     [System Tool] Retrieve initial observations directly from local session controllers.
