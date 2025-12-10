@@ -6,7 +6,7 @@ import json
 import httpx
 import asyncio
 import logging
-import time # 新增导入
+import time
 from typing import Optional, List, Any, Union, Callable
 from dotenv import load_dotenv
 
@@ -19,7 +19,8 @@ sys.path.append(os.path.join(cwd, "src"))
 
 from mcp.server.fastmcp import FastMCP
 from src.utils.desktop_env.controllers.python import PythonController
-from src.utils.desktop_env.controllers.setup import execute_setup_steps # 确保导入 execute_setup_steps
+# [关键新增] 引入核心 Setup 执行器
+from src.utils.desktop_env.controllers.setup import execute_setup_steps
 
 # 导入注册表
 from mcp_server.core.registry import ToolRegistry
@@ -36,87 +37,77 @@ print(f"🚀 Starting VM PyAutoGUI MCP Server (Registry Mode)")
 # 全局会话字典，Key 为 worker_id
 GLOBAL_SESSIONS = {}
 
-# --- 通用功能提取 (与 os_computer_13_server 保持一致) ---
+# =============================================================================
+# 1. 核心共享逻辑 (Shared Core Logic)
+# =============================================================================
 
-async def vm_pyautogui_initialization(worker_id: str, config_content = None) -> bool:
+async def _initialize_vm_session(worker_id: str, controller: PythonController, config_data: Any, task_id: str = "unknown") -> bool:
     """
-    VM PyAutoGUI资源初始化函数，用于解析Benchmark特有的数据结构并执行初始化操作
+    [Core Logic] 统一的 VM 会话初始化逻辑。
+    负责解析配置、执行 Setup 步骤 (下载/安装/执行) 以及加载评估器。
+    供 Batch Hook 和 Standalone Tool 复用。
     """
-    # 防御性编程：无配置即成功
-    if not config_content:
-        logger.info(f"[{worker_id}] VM initialization skipped: no config_content provided")
-        return True
-
     try:
-        logger.info(f"[{worker_id}] VM initialization started. config_content type: {type(config_content)}")
-
-        session = GLOBAL_SESSIONS.get(worker_id)
-        if not session or not session.get("controller"):
-            # Session未找到，尝试调用 setup_vm_session 工具进行初始化
+        # 1. 归一化配置数据
+        task_spec = {}
+        if isinstance(config_data, dict):
+            task_spec = config_data
+        elif isinstance(config_data, str) and config_data.strip():
             try:
-                # 如果 config_content 是 dict，转为 JSON 字符串
-                init_script = json.dumps(config_content) if isinstance(config_content, dict) else config_content
-                logger.info(f"[{worker_id}] Session not found, calling setup_vm_session")
-                # 注意：此处自动初始化仍调用 setup_vm_session，它会硬编码资源类型
-                result_json = await setup_pyautogui_session(
-                    config_name="auto_init",
-                    task_id="unknown",
-                    worker_id=worker_id,
-                    init_script=init_script
-                )
-                result = json.loads(result_json)
-                success = result.get("status") == "success"
-                logger.info(f"[{worker_id}] setup_vm_session result: {success}")
-                return success
-            except Exception as e:
-                logger.error(f"[{worker_id}] Auto setup_vm_session failed: {e}", exc_info=True)
+                if config_data.strip().startswith("{"):
+                    task_spec = json.loads(config_data)
+                else:
+                    # 兼容纯 Python 脚本字符串
+                    logger.info(f"[{worker_id}] Executing raw python script...")
+                    controller.execute_python_command(config_data)
+                    return True
+            except json.JSONDecodeError:
+                logger.error(f"[{worker_id}] Config string is not valid JSON")
                 return False
-
-        # 如果 Session 存在，则手动执行配置逻辑
-        controller = session["controller"]
-        logger.info(f"[{worker_id}] Found existing session with controller")
-
-        # 统一处理 config_content 可能是 dict 或 str 的情况
-        if isinstance(config_content, dict):
-            task_spec = config_content
-        elif isinstance(config_content, str) and config_content.strip().startswith("{"):
-            try:
-                task_spec = json.loads(config_content)
-            except json.JSONDecodeError as e:
-                logger.error(f"[{worker_id}] Invalid JSON in init_script: {e}")
-                raise RuntimeError(f"Invalid JSON in init_script: {e}")
         else:
-            # Case C: 传入的是纯 Python 脚本字符串
-            logger.info(f"[{worker_id}] Processing config_content as Python script")
-            controller.execute_python_command(config_content)
-            logger.info(f"[{worker_id}] VM initialization completed (script executed)")
+            # 空配置直接返回成功
             return True
 
-        # 处理任务规范 (来自 Case A 或 Case B)
+        # 2. 执行 Benchmark 标准初始化步骤 (Setup Steps)
         setup_steps = task_spec.get("config", [])
-        evaluator = task_spec.get("evaluator", {})
-        logger.info(f"[{worker_id}] Task spec extracted: {len(setup_steps)} setup steps, evaluator present: {bool(evaluator)}")
-
-        # 执行 config 中的每一步 (download, execute 等)
         if setup_steps:
-            # 确保这里能正确导入 execute_setup_steps
-            from src.utils.desktop_env.controllers.setup import execute_setup_steps
-            execute_setup_steps(controller, setup_steps)
-            logger.info(f"[{worker_id}] Setup steps completed")
+            logger.info(f"[{worker_id}] Executing {len(setup_steps)} setup steps via SetupController...")
+            # 调用 setup.py 中的强力配置逻辑
+            success = execute_setup_steps(controller, setup_steps)
+            if not success:
+                logger.error(f"[{worker_id}] Setup steps execution failed")
+                return False
 
-        # 将 evaluator 缓存到 GLOBAL_SESSIONS 中供后续 evaluate_task 使用
-        GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
-        logger.info(f"[{worker_id}] VM initialization completed successfully")
+        # 3. 缓存评估器 (Evaluator)
+        evaluator = task_spec.get("evaluator", {})
+        if evaluator:
+            if worker_id in GLOBAL_SESSIONS:
+                GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
+                logger.info(f"[{worker_id}] Evaluator configuration loaded")
 
         return True
+
     except Exception as e:
-        logger.error(f"[{worker_id}] VM initialization failed: {e}", exc_info=True)
+        logger.error(f"[{worker_id}] Session initialization failed: {e}", exc_info=True)
         return False
+
+async def _cleanup_vm_session_local(worker_id: str):
+    """
+    [Core Logic] 统一的本地状态清理逻辑。
+    只负责从内存中移除 Session，不负责调用 API 释放资源。
+    """
+    if worker_id in GLOBAL_SESSIONS:
+        # 如果需要关闭 socket 连接等操作，可以在这里做
+        # session = GLOBAL_SESSIONS[worker_id]
+        # if "controller" in session: session["controller"].close()
+        
+        del GLOBAL_SESSIONS[worker_id]
+        logger.info(f"[{worker_id}] VM Session local state cleaned up.")
 
 def _get_controller(worker_id: str) -> PythonController:
     session = GLOBAL_SESSIONS.get(worker_id)
     if not session or not session.get("controller"):
-        raise RuntimeError(f"Session not found for worker: {worker_id}. Call 'setup_pyautogui_session' first.")
+        raise RuntimeError(f"Session not found for worker: {worker_id}. Call 'allocate_single_resource' or 'setup_pyautogui_session' first.")
     return session["controller"]
 
 async def _execute_and_capture(worker_id: str, action_logic: Callable) -> List[Union[TextContent, ImageContent]]:
@@ -167,61 +158,73 @@ async def _execute_and_capture(worker_id: str, action_logic: Callable) -> List[U
 
     return contents
 
-# --- 生命周期工具 (Group: computer_lifecycle) ---
+# =============================================================================
+# 2. 批处理钩子 (Batch Hooks) - 供 system_tools 调用
+# =============================================================================
+
+async def vm_pyautogui_initialization(worker_id: str, config_content = None) -> bool:
+    """
+    [Setup Hook] 被 system_tools.setup_batch_resources 调用。
+    假设资源已由 system_tools 分配并注入 GLOBAL_SESSIONS。
+    """
+    session = GLOBAL_SESSIONS.get(worker_id)
+    if not session or "controller" not in session:
+        logger.error(f"[{worker_id}] No active session found. Cannot initialize.")
+        return False
+
+    # 调用核心逻辑
+    return await _initialize_vm_session(
+        worker_id=worker_id,
+        controller=session["controller"],
+        config_data=config_content,
+        task_id=session.get("task_id", "batch_task")
+    )
+
+async def vm_pyautogui_cleanup(worker_id: str):
+    """
+    [Teardown Hook] 被 system_tools.release_batch_resources (或 cleanup) 调用。
+    """
+    await _cleanup_vm_session_local(worker_id)
+
+# =============================================================================
+# 3. 独立工具 (Standalone Tools) - 供 Agent 直接调用
+# =============================================================================
 
 @ToolRegistry.register_tool("pyautogui_lifecycle", hidden=True)
 async def setup_pyautogui_session(config_name: str, task_id: str, worker_id: str, init_script: str = "") -> str:
     """
-    [System Tool] Initialize VM PyAutoGUI session.
+    [System Tool] Initialize VM PyAutoGUI session (Standalone Mode).
     Allocates VM resources and initializes the controller.
-    
-    Args:
-        config_name: Configuration name.
-        task_id: Task ID
-        worker_id: Worker ID
-        init_script: Initialization script content
     """
-    
-    # [关键修改] 硬编码目标资源类型为 vm_pyautogui
     target_resource_type = "vm_pyautogui"
-    
-    # 设置长超时
     req_timeout = 600.0 
 
+    # 1. 申请资源
     async with httpx.AsyncClient() as client:
         try:
-            # 直接发起申请
             resp = await client.post(
                 f"{RESOURCE_API_URL}/allocate",
                 json={
                     "worker_id": worker_id, 
-                    "type": target_resource_type, # 使用硬编码的资源类型
+                    "type": target_resource_type,
                     "timeout": req_timeout        
                 },
                 timeout=req_timeout + 5 
             )
             resp.raise_for_status()
             data = resp.json()
-            
         except httpx.TimeoutException:
-            return json.dumps({
-                "status": "error", 
-                "message": f"System busy: Could not acquire '{target_resource_type}' within {req_timeout}s. Resource queue timeout."
-            })
-        except httpx.HTTPStatusError as e:
-            error_msg = f"Allocation failed: {e.response.text}"
-            return json.dumps({"status": "error", "message": error_msg})
+            return json.dumps({"status": "error", "message": f"Resource queue timeout for {target_resource_type}"})
         except Exception as e:
-            return json.dumps({"status": "error", "message": f"Network/Unknown error: {str(e)}"})
+            return json.dumps({"status": "error", "message": f"Allocation failed: {str(e)}"})
 
     env_id = data.get("id")
     ip = data.get("ip")
     port = data.get("port", 5000)
 
     try:
-        # 初始化控制器
+        # 2. 初始化控制器
         controller = PythonController(vm_ip=ip, server_port=port)
-        # time.sleep(3) # 根据需要保留或移除
         
         # 存入全局会话
         GLOBAL_SESSIONS[worker_id] = {
@@ -230,29 +233,11 @@ async def setup_pyautogui_session(config_name: str, task_id: str, worker_id: str
             "task_id": task_id
         }
         
-        # 处理初始化脚本 (与通用逻辑相同)
+        # 3. 调用核心初始化逻辑
         if init_script:
-            if init_script.strip().startswith("{"):
-                try:
-                    task_spec = json.loads(init_script)
-                    setup_steps = task_spec.get("config", [])
-                    evaluator = task_spec.get("evaluator", {})
-                    
-                    if setup_steps:
-                        from src.utils.desktop_env.controllers.setup import execute_setup_steps
-                        execute_setup_steps(controller, setup_steps)
-                    
-                    GLOBAL_SESSIONS[worker_id]["evaluator"] = evaluator
-                    
-                except json.JSONDecodeError as e:
-                    return json.dumps({"status": "error", "message": f"Invalid JSON in init_script: {e}"})
-            else:
-                try:
-                    controller.execute_python_command(init_script)
-                except Exception as e:
-                    return json.dumps({"status": "error", "message": f"Failed to execute init_script: {e}"})
+            await _initialize_vm_session(worker_id, controller, init_script, task_id)
         
-        # 获取初始状态
+        # 4. 获取初始状态
         screenshot = controller.get_screenshot()
         screenshot_b64 = base64.b64encode(screenshot).decode('utf-8') if screenshot else ""
         
@@ -270,8 +255,9 @@ async def setup_pyautogui_session(config_name: str, task_id: str, worker_id: str
 async def teardown_pyautogui_environment(worker_id: str) -> str:
     """
     [System Tool] Teardown PyAutoGUI environment.
-    Releases resources associated with the session.
+    Releases resources and cleans up local session.
     """
+    # 1. 释放远程资源
     session = GLOBAL_SESSIONS.get(worker_id)
     if session:
         env_id = session.get("env_id")
@@ -279,9 +265,11 @@ async def teardown_pyautogui_environment(worker_id: str) -> str:
             try:
                 await client.post(f"{RESOURCE_API_URL}/release", 
                                 json={"resource_id": env_id, "worker_id": worker_id}, timeout=10)
-            except:
-                pass
-        GLOBAL_SESSIONS.pop(worker_id, None)
+            except Exception as e:
+                logger.error(f"Remote release failed: {e}")
+
+    # 2. 调用核心清理逻辑
+    await _cleanup_vm_session_local(worker_id)
     return "Released"
 
 @ToolRegistry.register_tool("pyautogui_lifecycle", hidden=True)
@@ -306,9 +294,7 @@ async def evaluate_pyautogui_task(worker_id: str) -> str:
 
 @ToolRegistry.register_tool("pyautogui_observation", hidden=True)
 async def start_pyautogui_recording(worker_id: str) -> str:
-    """
-    [System Tool] Start screen recording for PyAutoGUI.
-    """
+    """Start screen recording for PyAutoGUI."""
     try:
         ctrl = _get_controller(worker_id)
         ctrl.start_recording()
@@ -318,11 +304,10 @@ async def start_pyautogui_recording(worker_id: str) -> str:
 
 @ToolRegistry.register_tool("pyautogui_observation", hidden=True)
 async def stop_pyautogui_recording(worker_id: str, save_path: str) -> str:
-    """
-    [System Tool] Stop recording and save file for PyAutoGUI.
-    """
+    """Stop recording and save file for PyAutoGUI."""
     try:
         ctrl = _get_controller(worker_id)
+        # Ensure directory exists
         directory = os.path.dirname(save_path)
         if directory and not os.path.exists(directory):
             os.makedirs(directory)
@@ -339,20 +324,15 @@ async def stop_pyautogui_recording(worker_id: str, save_path: str) -> str:
 
 @ToolRegistry.register_tool("desktop_action_pyautogui")
 async def desktop_execute_python_script(worker_id: str, script: str) -> list:
-    """
-    Execute a Python script in the desktop environment.
-    """
+    """Execute a Python script in the desktop environment."""
     ctrl = _get_controller(worker_id)
     return await _execute_and_capture(worker_id, lambda: 
         ctrl.execute_python_command(script)
     )
 
-# 共享动作 (只注册到 desktop_action_pyautogui)
 @ToolRegistry.register_tool("desktop_action_pyautogui")
 async def desktop_mouse_button(worker_id: str, action: str, button: str = "left") -> list:
-    """
-    Press down or release the mouse button.
-    """
+    """Press down or release the mouse button."""
     ctrl = _get_controller(worker_id)
     act_type = "MOUSE_DOWN" if action.lower() == "down" else "MOUSE_UP"
     return await _execute_and_capture(worker_id, lambda: 
@@ -361,9 +341,7 @@ async def desktop_mouse_button(worker_id: str, action: str, button: str = "left"
 
 @ToolRegistry.register_tool("desktop_action_pyautogui")
 async def desktop_control(worker_id: str, action: str) -> list:
-    """
-    Execute a control action.
-    """
+    """Execute a control action."""
     ctrl = _get_controller(worker_id)
     act_str = action.upper()
     return await _execute_and_capture(worker_id, lambda: 

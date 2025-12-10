@@ -1,0 +1,115 @@
+{
+  "id": "001_Culture_Art_L1_p1_t3_m0_r1_w0_c0_g5",
+  "question": "这幅画的作者在创作此画时多少岁？",
+  "images": [
+    "001_Culture_Art.jpg"
+  ],
+  "answer": "36岁",
+  "sub_goals": [
+    {
+      "sg_id": "1",
+      "description": "识别图片中的画作名称",
+      "key_info": "《星夜》(The Starry Night)",
+      "ability": "ReverseImageSearch"
+    },
+    {
+      "sg_id": "2",
+      "description": "查询该画作的作者",
+      "key_info": "文森特·梵高 (Vincent van Gogh)",
+      "ability": "TextSearch"
+    },
+    {
+      "sg_id": "3",
+      "description": "查询该画作的创作具体时间",
+      "key_info": "1889年6月",
+      "ability": "TextSearch"
+    },
+    {
+      "sg_id": "4",
+      "description": "查询作者的出生日期",
+      "key_info": "1853年3月30日",
+      "ability": "TextSearch"
+    },
+    {
+      "sg_id": "5",
+      "description": "计算创作时的年龄",
+      "key_info": "36岁 (1889 - 1853 = 36)",
+      "ability": "Calculate"
+    }
+  ],
+  "metadata": {
+    "vis_inputs": 1,
+    "source": [
+      "https://en.wikipedia.org/wiki/The_Starry_Night",
+      "https://www.moma.org/collection/works/79802"
+    ],
+    "difficulty": "medium",
+    "domain": "Culture_Art",
+    "fc_num": {
+      "TextSearch": 3,
+      "ImageSearch": 0,
+      "ReverseImageSearch": 1,
+      "WebVisit": 0,
+      "Crop": 0
+    }
+  },
+  "trajectory": {
+    "type": "Tree/Sequence",
+    "steps": [
+      {
+        "step": 1,
+        "tool_name": "ReverseImageSearch",
+        "input": "001_Culture_Art.jpg",
+        "output": "《星夜》",
+        "description": "通过图搜获得画作名字",
+        "dependence": [],
+        "verify": ""
+      },
+      {
+        "step": 2,
+        "tool_name": "TextSearch",
+        "input": "星夜 作者",
+        "output": "梵高",
+        "description": "通过文搜获得画作作者名字",
+        "dependence": [
+          1
+        ],
+        "verify": ""
+      },
+      {
+        "step": 3,
+        "tool_name": "TextSearch",
+        "input": "星夜 梵高 创作时间",
+        "output": "1889年",
+        "description": "通过文搜获得画作创作时间",
+        "dependence": [
+          2
+        ],
+        "verify": ""
+      },
+      {
+        "step": 4,
+        "tool_name": "TextSearch",
+        "input": "梵高 出生日期",
+        "output": "1853年",
+        "description": "通过文搜获得作家出生日期",
+        "dependence": [
+          2
+        ],
+        "verify": ""
+      },
+      {
+        "step": 5,
+        "tool_name": "Calculate",
+        "input": "1889年,1853年",
+        "output": "36岁",
+        "description": "计算作家创作该画作时年龄",
+        "dependence": [
+          3,
+          4
+        ],
+        "verify": "1889-1853=36"
+      }
+    ]
+  }
+}
