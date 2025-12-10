@@ -288,7 +288,10 @@ def _wait_until_server_ready(public_ip: str):
                 logger.info(f"Server {public_ip} is ready")
                 return
         except Exception:
-            time.sleep(WAIT_DELAY)
+            pass  # 发生异常时不立即 sleep，而是统一在循环底部 sleep
+        
+        # [修改点] 将 sleep 移到 try/except 块之外，确保每次重试前都等待
+        time.sleep(WAIT_DELAY)
 
     raise TimeoutError(
         f"Server {public_ip} did not respond within {MAX_ATTEMPTS * WAIT_DELAY} seconds"

@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """
-OSWorld 任务执行演示 (基于 demo_single_resource_flow.py)
+OSWorld 任务执行演示 (VM PyAutoGUI 生产环境完整版)
 
-功能：
-1. 分配 vm_pyautogui 资源
-2. 解析 OSWorld 任务格式 (config) 并自动执行环境配置 (Setup)
-3. 执行任务目标 (统计 PHP 文件行数)
-4. 释放资源
+此脚本演示了如何使用 MCP (Model Context Protocol) Client 与 Server 进行交互，
+完成从资源申请、环境初始化、任务执行到资源释放的全流程。
+
+前置条件：
+1. 确保 MCP Server (Gateway) 已在 http://localhost:8080 启动。
+2. 确保项目根目录下包含 src/utils 模块。
+"""
+
+#!/usr/bin/env python3
+"""
+OSWorld 任务执行演示 (VM PyAutoGUI 生产环境完整版 - 智能日志优化)
+
+此脚本演示了如何使用 MCP (Model Context Protocol) Client 与 Server 进行交互。
+包含自动资源管理、安全白名单及智能日志清洗功能。
+
+前置条件：
+1. 确保 MCP Server (Gateway) 已在 http://localhost:8080 启动。
+2. 确保项目根目录下包含 src/utils 模块。
 """
 
 import os
@@ -15,35 +28,46 @@ import json
 import logging
 import asyncio
 
-# 假设脚本在项目根目录或合适的位置，确保可以导入 utils
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ==========================================
+# 1. 环境路径配置
+# ==========================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 将 'src' 目录添加到 Python 搜索路径，以便导入 utils
+sys.path.insert(0, os.path.join(current_dir, "src"))
 
-# 尝试导入 MCPSSEClient，如果环境未设置，需确保路径正确
+# ==========================================
+# 2. 核心依赖导入
+# ==========================================
 try:
     from utils.mcp_sse_client import MCPSSEClient
-except ImportError:
-    # 简单的 mock 或提示，实际运行时需确保环境正确
-    logging.warning("Could not import MCPSSEClient. Please run this script in the correct environment.")
-    class MCPSSEClient:
-        def __init__(self, url): pass
-        async def connect(self): pass
-        async def list_tools(self): return []
-        async def call_tool(self, name, args): return type('obj', (object,), {'content': []})
+    from mcp.types import Tool
+except ImportError as e:
+    logging.critical(f"❌ 依赖导入失败: {e}")
+    logging.critical("请确保在正确的项目根目录下运行，且 'src/utils' 存在。")
+    sys.exit(1)
 
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("TaskRunner")
 
 # ==========================================
-# 输入数据 (Task Data)
+# 3. 静态配置
 # ==========================================
+
+# [配置] 工具白名单
+ALLOWED_TOOL_GROUPS = {
+    "pyautogui_lifecycle", 
+    "pyautogui_observation", 
+    "desktop_action_pyautogui"
+}
+
+# [数据] 任务定义
 TASK_DATA = {
   "id": "4127319a-8b79-4410-b58a-7a151e15f3d7",
   "question": "Use terminal command to count all the lines of all php files in current directory recursively, show the result on the terminal",
-  "answer": "",
   "config": [
     {
       "type": "download",
@@ -58,240 +82,253 @@ TASK_DATA = {
     },
     {
       "type": "execute",
-      "parameters": {
-        "command": "chmod +x setup.sh",
-        "shell": True
-      }
+      "parameters": {"command": "chmod +x setup.sh", "shell": True}
     },
     {
       "type": "execute",
-      "parameters": {
-        "command": "bash ./setup.sh",
-        "shell": True
-      }
+      "parameters": {"command": "bash ./setup.sh", "shell": True}
     },
     {
       "type": "execute",
-      "parameters": {
-        "command": "export DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/bus'\nxdg-open /home/user/project",
-        "shell": True
-      }
+      "parameters": {"command": "export DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/bus'\nxdg-open /home/user/project", "shell": True}
     }
-  ],
-  "evaluator": {
-    "func": "check_include_exclude",
-    "result": {
-      "type": "vm_terminal_output"
-    },
-    "expected": {
-      "type": "rule",
-      "rules": {
-        "include": [
-          "54"
-        ],
-        "exclude": []
-      }
-    }
-  }
+  ]
 }
 
-class OSWorldTaskRunner:
-    """
-    OSWorld 任务执行器
-    """
+# ==========================================
+# 4. 任务执行器类
+# ==========================================
 
+class OSWorldPyAutoGUIRunner:
     def __init__(self, server_url: str = "http://localhost:8080"):
         self.server_url = server_url
-        self.worker_id = "task_runner_001"
+        self.worker_id = "task_runner_prod_001"
         self.mcp_client = MCPSSEClient(f"{server_url}/sse")
-        self.allocated_resource_id = None
-        self.resource_type = "vm_pyautogui"
+        self.initialized = False
+        self.agent_tools = [] 
 
-        logger.info(f"[{self.worker_id}] Initialized with server: {server_url}")
+        logger.info(f"[{self.worker_id}] 初始化完成，目标服务器: {server_url}")
 
     async def connect(self):
-        logger.info(f"[{self.worker_id}] Connecting to MCP Server...")
+        logger.info(f"[{self.worker_id}] 正在连接 MCP Server...")
         await self.mcp_client.connect()
-        logger.info(f"[{self.worker_id}] ✅ Connected")
+        logger.info(f"[{self.worker_id}] ✅ 连接成功")
 
-    async def allocate_resource(self):
-        """分配资源"""
-        logger.info(f"[{self.worker_id}] Allocating {self.resource_type}...")
+    async def fetch_and_filter_tools(self):
+        logger.info(f"[{self.worker_id}] 获取并过滤工具列表...")
+        try:
+            all_tools = await self.mcp_client.list_tools()
+            self.agent_tools = []
+            
+            for tool in all_tools:
+                name = tool.name
+                group = getattr(tool, "group", None) 
+                
+                if not group and hasattr(tool, "metadata") and tool.metadata:
+                    group = tool.metadata.get("group")
+
+                if group and group in ALLOWED_TOOL_GROUPS:
+                    self.agent_tools.append(tool)
+                elif ("pyautogui" in name or "desktop_" in name):
+                    self.agent_tools.append(tool)
+            
+            logger.info(f"[{self.worker_id}] 🛡️ 白名单应用完成。可用工具数: {len(self.agent_tools)}")
+            return True
+        except Exception as e:
+            logger.error(f"获取工具失败: {e}", exc_info=True)
+            raise e
+
+    async def setup_session(self):
+        logger.info(f"[{self.worker_id}] 开始建立会话 (资源分配 + 自动化配置)...")
+        
+        init_script_json = json.dumps(TASK_DATA)
+        
         try:
             result = await self.mcp_client.call_tool(
-                "allocate_single_resource",
+                "setup_pyautogui_session",
                 {
+                    "config_name": "auto_task",
+                    "task_id": TASK_DATA["id"],
                     "worker_id": self.worker_id,
-                    "resource_type": self.resource_type,
-                    "timeout": 600
+                    "init_script": init_script_json
                 }
             )
+            
             response = self._parse_mcp_response(result)
             
-            # 检查错误
+            # [日志优化] 打印清洗后的响应结构，隐藏超长内容
+            sanitized_resp = self._sanitize_log_data(response)
+            logger.info(f"[{self.worker_id}] Setup 响应详情:\n{json.dumps(sanitized_resp, indent=2, ensure_ascii=False)}")
+
             if response.get("status") == "error":
-                logger.error(f"Allocation failed: {response}")
-                return False
-                
-            # 获取资源ID
-            resource_info = response.get(self.resource_type)
-            if resource_info:
-                self.allocated_resource_id = resource_info.get("id")
-                logger.info(f"[{self.worker_id}] ✅ Allocated Resource ID: {self.allocated_resource_id}")
-                
-                # 初始化资源 (Setup Batch)
-                await self._initial_setup(response)
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Allocation error: {e}")
-            return False
-
-    async def _initial_setup(self, allocation_data):
-        """调用 setup_batch_resources 进行基础初始化"""
-        logger.info(f"[{self.worker_id}] Performing base resource setup...")
-        await self.mcp_client.call_tool(
-            "setup_batch_resources",
-            {
-                "worker_id": self.worker_id,
-                "resource_init_configs": {}, # 这里可以传递基础快照配置
-                "allocated_resources": allocation_data
-            }
-        )
-
-    async def run_task_setup(self, config_steps):
-        """
-        执行 Task 中的 config 步骤 (下载文件, 运行命令)
-        """
-        logger.info(f"[{self.worker_id}] 🚀 Starting Task Environment Setup...")
-        
-        for i, step in enumerate(config_steps):
-            step_type = step.get("type")
-            params = step.get("parameters", {})
-            logger.info(f"[{self.worker_id}] Executing Step {i+1}: {step_type}")
-
-            if step_type == "download":
-                files = params.get("files", [])
-                for f in files:
-                    url = f.get("url")
-                    path = f.get("path")
-                    # 构造 wget 命令下载文件
-                    cmd = f"wget -O {path} {url}"
-                    logger.info(f"  Downloading: {url} -> {path}")
-                    await self._execute_shell_command(cmd)
-
-            elif step_type == "execute":
-                cmd = params.get("command")
-                logger.info(f"  Executing Command: {cmd}")
-                await self._execute_shell_command(cmd)
+                error_msg = response.get('message', 'Unknown error')
+                logger.error(f"[{self.worker_id}] 初始化失败: {error_msg}")
+                raise RuntimeError(f"Session setup failed: {error_msg}")
             
-            else:
-                logger.warning(f"  Unknown step type: {step_type}")
+            self.initialized = True
+            logger.info(f"[{self.worker_id}] ✅ 会话建立成功")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[{self.worker_id}] 初始化异常: {e}")
+            raise e
 
-        logger.info(f"[{self.worker_id}] ✅ Task Environment Setup Completed.")
+    async def run_agent_task(self):
+        question = TASK_DATA["question"]
+        logger.info(f"[{self.worker_id}] 🤖 Agent 收到问题: {question}")
+        
+        tool_to_use = "desktop_execute_python_script"
+        allowed_names = [t.name for t in self.agent_tools]
+        if tool_to_use not in allowed_names:
+            logger.error(f"🚨 安全警报: 试图调用未授权工具 '{tool_to_use}'")
+            return
 
-    async def run_agent_task(self, question):
-        """
-        模拟 Agent 执行任务
-        """
-        logger.info(f"[{self.worker_id}] 🤖 Simulating Agent Action for question: {question}")
+        solution_shell_cmd = "find . -name '*.php' -type f -print0 | xargs -0 wc -l"
+        logger.info(f"[{self.worker_id}] Agent 决定执行命令: {solution_shell_cmd}")
         
-        # 针对题目 "count all the lines of all php files in current directory recursively"
-        # 构造解决方案命令
-        # 注意：这里模拟 Agent 思考后生成的命令
-        solution_command = "find . -name '*.php' -type f -print0 | xargs -0 wc -l"
+        output = await self._execute_shell_command(solution_shell_cmd)
         
-        logger.info(f"[{self.worker_id}] Agent decided to run: {solution_command}")
+        # [日志优化] 如果输出过长，进行截断显示
+        log_output = self._sanitize_log_data(output)
+        logger.info(f"[{self.worker_id}] 📄 命令输出:\n{log_output}")
         
-        output = await self._execute_shell_command(solution_command)
-        
-        logger.info(f"[{self.worker_id}] 📄 Command Output:\n{output}")
-        
-        # 简单的验证（根据 evaluator.expected.rules.include）
         expected_output = "54"
         if expected_output in output:
-            logger.info(f"[{self.worker_id}] ✅ Verification Passed: Output contains '{expected_output}'")
+            logger.info(f"[{self.worker_id}] ✅ 结果验证通过")
         else:
-            logger.warning(f"[{self.worker_id}] ⚠️ Verification Warning: Expected '{expected_output}' not found explicitly.")
+            logger.warning(f"[{self.worker_id}] ⚠️ 结果验证未通过")
 
     async def _execute_shell_command(self, command):
-        """
-        调用工具执行 Shell 命令
-        注意：这里假设 Server 端有一个 'execute_command' 或 'run_terminal_cmd' 工具
-        """
+        safe_command = command.replace("'", "\\'")
+        python_wrapper = f"""
+import subprocess
+try:
+    cmd = '{safe_command}'
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+    print(result.stdout)
+    if result.stderr:
+        print("STDERR:", result.stderr)
+except Exception as e:
+    print(f"Execution Error: {{e}}")
+"""
         try:
-            # 尝试调用 execute_command (通用名称)
-            # 如果您的环境中工具名不同（如 'computer' 工具的 'terminal' 动作），请修改此处
             result = await self.mcp_client.call_tool(
-                "execute_command", 
+                "desktop_execute_python_script", 
                 {
                     "worker_id": self.worker_id,
-                    "command": command
+                    "script": python_wrapper
                 }
             )
             
-            # 解析文本结果
             output = ""
             if hasattr(result, 'content'):
                 for item in result.content:
                     if item.type == 'text':
                         output += item.text
-            
             return output
         except Exception as e:
-            logger.error(f"Command execution failed: {e}")
+            logger.error(f"命令执行失败: {e}")
             return f"Error: {e}"
 
     async def release(self):
-        """释放资源"""
-        if self.allocated_resource_id:
-            logger.info(f"[{self.worker_id}] Releasing resource {self.allocated_resource_id}...")
-            await self.mcp_client.call_tool(
-                "release_batch_resources",
-                {
-                    "worker_id": self.worker_id,
-                    "resource_ids": [self.allocated_resource_id]
-                }
-            )
-            logger.info(f"[{self.worker_id}] ✅ Resource released")
-        await self.mcp_client.disconnect()
-
-    def _parse_mcp_response(self, response):
-        """简单的 JSON 解析帮助函数"""
+        if self.initialized:
+            logger.info(f"[{self.worker_id}] 正在清理会话资源...")
+            try:
+                if self.mcp_client.session:
+                    await self.mcp_client.call_tool(
+                        "teardown_pyautogui_environment",
+                        {"worker_id": self.worker_id}
+                    )
+                    logger.info(f"[{self.worker_id}] ✅ 资源已释放")
+            except Exception as e:
+                logger.warning(f"资源释放请求失败 (忽略): {e}")
+            finally:
+                self.initialized = False
+                
         try:
-            if hasattr(response, 'content') and response.content:
-                text = response.content[0].text
+            await self.mcp_client.close()
+            logger.info(f"[{self.worker_id}] 🔌 客户端已断开")
+        except Exception:
+            pass
+
+    def _parse_mcp_response(self, result):
+        try:
+            if hasattr(result, 'content') and result.content:
+                text = result.content[0].text
                 return json.loads(text)
-        except:
+        except json.JSONDecodeError:
+            return {"status": "unknown", "text": text}
+        except Exception:
             pass
         return {}
 
+    def _sanitize_log_data(self, data):
+        """
+        [Helper] 智能清洗数据，将过长的 Base64 图片或 XML 树替换为占位符。
+        """
+        # 1. 字典递归处理
+        if isinstance(data, dict):
+            new_dict = {}
+            for k, v in data.items():
+                # 针对特定字段名直接截断
+                if k in ["screenshot", "accessibility_tree", "html", "source"]:
+                    new_dict[k] = self._truncate_string(v, max_len=100)
+                else:
+                    new_dict[k] = self._sanitize_log_data(v)
+            return new_dict
+        
+        # 2. 列表递归处理
+        elif isinstance(data, list):
+            return [self._sanitize_log_data(i) for i in data]
+        
+        # 3. 字符串智能检测
+        elif isinstance(data, str):
+            # 检测 XML 结束标签
+            if "</accessibility_tree>" in data:
+                return self._truncate_string(data, max_len=200, label="[XML Tree]")
+            # 检测 Base64 图片头 (简单判断)
+            if data.startswith("iVBORw0KGgo") and len(data) > 500:
+                return self._truncate_string(data, max_len=50, label="[Base64 Image]")
+            # 普通长文本截断
+            if len(data) > 2000:
+                return self._truncate_string(data, max_len=500, label="[Long Text]")
+            return data
+            
+        else:
+            return data
+
+    def _truncate_string(self, text, max_len=100, label=""):
+        """字符串截断辅助函数"""
+        if not isinstance(text, str):
+            return str(text) # 非字符串直接转存
+        if len(text) <= max_len:
+            return text
+        prefix = f"{label} " if label else ""
+        return f"{prefix}{text[:max_len]}... <total {len(text)} chars> ...{text[-20:]}"
+
+# ==========================================
+# 5. 主程序入口
+# ==========================================
+
 async def main():
-    # 从环境变量或默认值获取 Server URL
     server_url = os.environ.get("MCP_SERVER_URL", "http://localhost:8080")
-    
-    runner = OSWorldTaskRunner(server_url)
+    runner = OSWorldPyAutoGUIRunner(server_url)
     
     try:
-        # 1. 连接
         await runner.connect()
-        
-        # 2. 分配资源
-        if not await runner.allocate_resource():
-            logger.error("Failed to allocate resource. Exiting.")
-            return
+        await runner.fetch_and_filter_tools()
+        await runner.setup_session()
+        await runner.run_agent_task()
 
-        # 3. 配置环境 (基于 JSON 中的 config)
-        await runner.run_task_setup(TASK_DATA["config"])
+    except BaseException as e:
+        logger.error(f"运行时错误或用户中断: {repr(e)}")
         
-        # 4. 执行任务 (基于 JSON 中的 question)
-        await runner.run_agent_task(TASK_DATA["question"])
-
-    except Exception as e:
-        logger.error(f"Runtime error: {e}", exc_info=True)
     finally:
-        # 5. 释放资源
+        logger.info("进入清理流程...")
         await runner.release()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

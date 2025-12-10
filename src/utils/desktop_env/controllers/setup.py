@@ -207,6 +207,10 @@ class SetupController:
                 "path": str, the path on the VM to store the downloaded file
               }
         """
+        # [新增] 确保缓存目录存在
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir, exist_ok=True)
+
         # [延迟导入] 只在需要上传文件时才导入 requests_toolbelt
         try:
             from requests_toolbelt.multipart.encoder import MultipartEncoder
