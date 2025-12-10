@@ -145,7 +145,7 @@ def main():
     parser = argparse.ArgumentParser(description="Unified MCP Gateway Server")
     parser.add_argument("--config", type=str, default="config.json", help="Path to the server configuration file")
     parser.add_argument("--port", type=int, help="Override port defined in config")
-    parser.add_argument("--enable-stats", action="store_true", default=True, help="Enable tool call statistics")
+    parser.add_argument("--enable-stats", action="store_true", default=False, help="Enable tool call statistics (disabled by default)")
     parser.add_argument("--stats-dir", type=str, default="tool_stats", help="Directory for statistics output")
     args = parser.parse_args()
 

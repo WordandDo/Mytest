@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 # System Prompts
 # =============================================================================
 
+# [修改说明] 移除了 <FINAL_ANSWER> 标签要求，保留了对答案简短性的指导
 SYSTEM_PROMPT_GENERIC = """You are a helpful assistant. You need to use tools to solve the problem.
 You must use tool to retrieve information to answer and verify. Don't answer by your own knowledge.
 
@@ -21,20 +22,18 @@ You must use tool to retrieve information to answer and verify. Don't answer by 
 6. After several (more than 10) tool-use, if you still can't get the final answer, you can answer by your own knowledge.
 
 ## Answer Strategy
-The final answer only contains the short answer to the question (few words), no other words like reasoning content.
-**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
+The final answer should only contain the short answer to the question (few words), avoiding unnecessary reasoning content in the final output string.
 """
 
-# 1. 不使用任何工具的纯粹版本
+# [修改说明] 移除了 <FINAL_ANSWER> 标签要求
 SYSTEM_PROMPT_NO_TOOLS = """You are a helpful assistant.
 You must answer the question using ONLY your own knowledge. Do not use any external tools or retrieval functions.
 
 ## Answer Strategy
-The final answer only contains the short answer to the question (few words), no other words like reasoning content.
-**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
+The final answer should only contain the short answer to the question (few words), avoiding unnecessary reasoning content in the final output string.
 """
 
-# 2. 只使用 Sparse (BM25) 的 Prompt
+# [修改说明] 移除了 <FINAL_ANSWER> 标签要求
 SYSTEM_PROMPT_SPARSE = """You are a helpful assistant. You need to use tools to solve the problem.
 You must use the sparse retrieval tool to answer and verify. Don't answer by your own knowledge.
 
@@ -46,11 +45,10 @@ You must use the sparse retrieval tool to answer and verify. Don't answer by you
 5. Verify findings through different approaches when possible.
 
 ## Answer Strategy
-The final answer only contains the short answer to the question (few words), no other words like reasoning content.
-**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
+The final answer should only contain the short answer to the question (few words), avoiding unnecessary reasoning content in the final output string.
 """
 
-# 3. 混合版本 (明确区分 Sparse 优势)
+# [修改说明] 移除了 <FINAL_ANSWER> 标签要求
 SYSTEM_PROMPT_HYBRID = """You are a helpful assistant. You need to use tools to solve the problem.
 You have access to a Hybrid Retrieval system consisting of both Sparse (keyword) and Dense (semantic) retrievers.
 
@@ -80,8 +78,7 @@ You must choose the appropriate retrieval method based on the nature of your que
 3. Use the information you retrieve carefully and accurately.
 
 ## Answer Strategy
-The final answer only contains the short answer to the question (few words), no other words like reasoning content.
-**IMPORTANT**: You must wrap your final answer with special tokens: <FINAL_ANSWER>your answer here</FINAL_ANSWER>
+The final answer should only contain the short answer to the question (few words), avoiding unnecessary reasoning content in the final output string.
 """
 
 
@@ -212,4 +209,3 @@ class HttpMCPRagEnv(HttpMCPEnv):
     # 1. release_batch_resources() - releases all allocated resources
     # 2. _cleanup_resource_sessions() - clears local session caches
     # This ensures consistent resource lifecycle management across all resource types.
-

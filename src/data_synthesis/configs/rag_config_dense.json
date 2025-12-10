@@ -9,11 +9,11 @@
   "synthesis_tips": "QA Synthesis Focus: Generate questions based on high-level understanding, summarization across multiple documents, and conceptual explanations.",
   "seed_description": "RAG Retrieval Topic",
   "model_name": "openai/gpt-oss-120b",
-  "max_depth": 6,
+  "max_depth": 10,
   "branching_factor": 2,
   "depth_threshold": 2,
   "max_trajectories": 3,
   "min_depth": 2,
   "max_retries": 3,
-  "max_workers": 5
+  "max_workers": 10
 }

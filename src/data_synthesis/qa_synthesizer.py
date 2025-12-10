@@ -116,36 +116,25 @@ Answer: {example.get('answer', '')}
         prompt += f"""
 Please synthesize a high-quality Q&A pair based on the trajectory:
 
-## Question Requirements (Crucial for Difficulty):
-- **Complex Reasoning**: The question MUST require synthesizing information from multiple steps or documents. Avoid simple single-fact lookups.
-- **Specific Granularity**: Ask for specific details, mechanisms, causal relationships, or comparisons. **AVOID** broad, report-style questions like "What are the features of X?" or "List the applications of Y".
-- **De-contextualized**: The question should be understandable without seeing the trajectory (e.g., use "What were the major NLP milestones in the 1950s?" instead of "What did the agent find in step 1?").
+## Question Requirements (Crucial for Reasoning & Brevity):
+- **Multi-hop Factoid**: The question MUST require synthesizing information from multiple steps/documents to answer, BUT the target answer must be a specific fact (e.g., a name, a date, a location, a count, or a yes/no status).
+- **Avoid Explanations**: **DO NOT** ask "How", "Why", or "Describe" questions that require long textual explanations. Instead of "How did X affect Y?", ask "What was the specific percentage increase in Y caused by X?".
+- **De-contextualized**: The question should be understandable without seeing the trajectory (e.g., use "What represents the..." instead of "What did the agent find...").
 
-## Answer Requirements (Crucial for Conciseness):
-- **Strict Length Limit**: Keep the answer concise (approx. 2-4 sentences). **DO NOT** generate long reports or summaries.
-- **Directness**: Answer the question directly. Do not start with "Based on the search results..." or "The documents mention...".
-- **Format Constraint**: Avoid using bullet points or numbered lists unless absolutely necessary for an enumeration question. Prefer a cohesive paragraph.
-- **Groundedness**: All facts must come strictly from the provided trajectory observations.
+## Answer Requirements (Crucial for Strict Length):
+- **Extreme Brevity**: The answer MUST be **less than or equal to one sentence**, or ideally just a **short phrase** (e.g., "1985", "The Treaty of Versailles", "Increased by 5%").
+- **No Fluff**: Do not use filler words like "According to the documents..." or "The answer is...". Provide ONLY the final answer value.
+- **Groundedness**: The specific fact must be strictly derived from the provided trajectory observations.
 
 ## Reasoning Steps Requirements:
-- Clearly show the logical deduction process from the raw observations to the final answer.
-- Explain *why* certain information from the trajectory was selected or discarded.
-- **Observation Fidelity**: The 'observation' field in the JSON MUST contain direct excerpts or key quotes from the actual trajectory. DO NOT summarize heavily; allow the noise to remain if it helps the model learn to filter information.
+- Clearly show the logical deduction process (Chain-of-Thought) that links the multiple steps to the single final fact.
+- **Observation Fidelity**: The 'observation' field in the JSON MUST contain direct excerpts.
 
 Return in JSON format:
 {{
-    "question": "question text",
-    "answer": "concise answer content",
-    "reasoning_steps": [
-        {{
-            "step": 1,
-            "description": "step description",
-            "intent": "step intent",
-            "action": "tool used",
-            "observation": "Direct excerpts or key snippets from the raw trajectory observation (do not hallucinate new info)"
-        }},
-        ...
-    ]
+    "question": "question text (multi-hop but targeting a specific fact)",
+    "answer": "short phrase or single sentence",
+    "reasoning_steps": [ ... ]
 }}
 """
         

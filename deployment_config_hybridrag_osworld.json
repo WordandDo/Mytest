@@ -1,0 +1,93 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "resources": {
+    "vm_computer_13": {
+      "enabled": false,
+      "implementation_class": "utils.resource_pools.vm_pool.VMPoolImpl",
+      "config": {
+        "num_vms": 3,
+        "provider_name": "aliyun",
+        "region": "${ALIYUN_REGION}",
+        "os_type": "Ubuntu",
+        "snapshot_name": "init_state",
+        "screen_size": [1920, 1080],
+        "headless": true,
+        "client_password": "${CLIENT_PASSWORD}",
+        "access_key": "${ALIYUN_ACCESS_KEY_ID}",
+        "secret_key": "${ALIYUN_ACCESS_KEY_SECRET}",
+        "image_id": "${ALIYUN_IMAGE_ID}",
+        "instance_type": "${ALIYUN_INSTANCE_TYPE}",
+        "vswitch_id": "${ALIYUN_VSWITCH_ID}",
+        "security_group_id": "${ALIYUN_SECURITY_GROUP_ID}"
+      }
+    },
+    "vm_pyautogui": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.vm_pool.VMPoolImpl",
+      "config": {
+        "num_vms": 5,
+        "provider_name": "aliyun",
+        "region": "${ALIYUN_REGION}",
+        "os_type": "Ubuntu",
+        "snapshot_name": "s-2ze6lo7hpqlgskk1ew09",
+        "screen_size": [1920, 1080],
+        "headless": true,
+        "client_password": "${CLIENT_PASSWORD}",
+        "access_key": "${ALIYUN_ACCESS_KEY_ID}",
+        "secret_key": "${ALIYUN_ACCESS_KEY_SECRET}",
+        "image_id": "${ALIYUN_IMAGE_ID}",
+        "instance_type": "${ALIYUN_INSTANCE_TYPE}",
+        "vswitch_id": "${ALIYUN_VSWITCH_ID}",
+        "security_group_id": "${ALIYUN_SECURITY_GROUP_ID}"
+      }
+    },
+    "rag": {
+      "enabled": false,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 50,
+        "rag_index_path": "/home/a1/sdb/wikidata4rag/wikipedia_embeddings",
+        "rag_model_name": "facebook/contriever",
+        "passages_path": "/home/a1/sdb/wikidata4rag/psgs_w100.tsv",
+
+        "use_gainrag": true,
+        "use_gpu_index": true,
+        "gpu_id": 0,
+        "default_top_k": 10,
+
+        "server_start_retries": 600
+      }
+    },
+    "rag_hybrid": {
+      "enabled": true,
+      "implementation_class": "utils.resource_pools.rag_pool.RAGPoolImpl",
+      "config": {
+        "num_rag_workers": 50,
+        "rag_index_path": "/home/a1/sdb/wikidata4rag/Search-r1",
+        "rag_model_name": "intfloat/e5-base-v2",
+
+        "use_hybrid": true,
+        "bm25_index_path": "/home/a1/sdb/wikidata4rag/Search-r1/bm25_index",
+        "dense_index_path": "/home/a1/sdb/wikidata4rag/Search-r1/e5_Flat.index",
+        "corpus_path": "/home/a1/sdb/wikidata4rag/Search-r1/data00/jiajie_jin/flashrag_indexes/wiki_dpr_100w/wiki_dump.jsonl",
+
+        "embedding_device": "cuda",
+        "use_gpu_index": false,
+        "default_top_k": 10,
+
+        "server_start_retries": 900,
+
+        "_comment": "Hybrid RAG 配置说明:",
+        "_comment_1": "- use_hybrid: 启用混合检索模式（BM25 + E5）",
+        "_comment_2": "- bm25_index_path: BM25 索引路径（使用 pyserini 构建）",
+        "_comment_3": "- dense_index_path: Dense 索引路径（Faiss 索引文件）",
+        "_comment_4": "- corpus_path: 原始语料库路径（JSONL 格式，Dense 检索需要）",
+        "_comment_5": "- rag_model_name: Dense 检索使用的模型（如 intfloat/e5-base-v2）",
+        "_comment_6": "- 默认使用 Dense 检索，可通过 search_type 参数切换到 Sparse"
+      }
+    }
+  }
+}
