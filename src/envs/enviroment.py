@@ -55,7 +55,6 @@ from .data_models import Observation, TrajectoryStep, TaskTrajectory
 from prompts.system_prompts import get_system_prompt as load_system_prompt
 from tools.tool import Tool
 from utils.resource_manager import ResourceManager
-import openai
 import os
 import json
 
@@ -553,13 +552,16 @@ class Environment(ABC):
         """验证配置 (可选覆盖)"""
         pass
 
-    def _get_openai_client(self) -> openai.OpenAI:
+    def _get_openai_client(self) -> Any:
         """
         获取 OpenAI 客户端实例（单例模式）
         如果客户端未初始化，则从环境变量或配置中读取配置并创建新实例
         """
         if not hasattr(self, '_openai_client') or self._openai_client is None:
-            import openai
+            try:
+                import openai  # type: ignore
+            except Exception as e:
+                raise ImportError("openai package is required for _get_openai_client") from e
             api_key = self.config.get("openai_api_key") or os.environ.get("OPENAI_API_KEY", "")
             base_url = self.config.get("openai_api_url") or os.environ.get("OPENAI_API_URL") or os.environ.get("OPENAI_API_BASE")
             

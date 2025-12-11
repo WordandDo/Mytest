@@ -167,3 +167,38 @@ benchmark.evaluate(predictions, metric="code_check")
 1.  **ID 匹配**: `evaluate` 方法依赖 `id` 来对齐预测结果和标准答案。请确保 Agent 返回的结果中包含正确的 Task ID。
 2.  **Answer 类型**: 无论原始 JSON 中的 answer 是数字还是布尔值，在 `BenchmarkItem` 中都会被转换为 `str`。
 3.  **并发评估**: `evaluate` 默认开启多线程 (`concurrent=True`) 以加速大量数据的评测。
+
+-----
+
+## 兼容新的任务数据结构
+
+自带解析器 `_parse_item()` 会将除 `id`/`question`/`answer` 之外的字段放入 `metadata`。
+
+- 若原始 JSON 中还包含一个内层的 `metadata` 字段（且为对象），其内容会被“扁平化”合并到条目 `metadata` 的顶层，方便直接访问。
+
+示例：
+
+```json
+{
+  "id": "001_Science_Biology_L1_p1_t1_m0_r1_w1_c0_g3",
+  "question": "...",
+  "images": ["./Science/001_Science_Biology.jpg"],
+  "answer": "2020",
+  "sub_goals": [...],
+  "metadata": {
+    "vis_inputs": 1,
+    "trajectory": {"type": "Sequence", "steps": [...]}
+  }
+}
+```
+
+加载后可直接访问：
+
+```python
+item = benchmark.items[0]
+item.metadata["images"]        # ["./Science/001_Science_Biology.jpg"]
+item.metadata["sub_goals"]     # 子目标列表
+item.metadata["trajectory"]    # 已提升到顶层的轨迹对象（来自内层 metadata）
+```
+
+注意：若键名冲突，外层同名键优先，内层 `metadata` 中的同名键不会覆盖外层。

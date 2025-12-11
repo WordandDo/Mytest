@@ -67,7 +67,7 @@ async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> st
                     results[rid] = f"failed: {resp.status_code}"
             except Exception as e:
                 logger.error(f"Failed to release resource {rid}: {e}")
-                results[rid] = f"error: {str(e)}")
+                results[rid] = f"error: {str(e)}"
     
     # 清理 Gateway 侧的全局会话缓存
     await _cleanup_resource_sessions(worker_id)

@@ -167,6 +167,51 @@ class ImageSearchService:
         
         # Remove duplicates based on link
         return self._deduplicate_results(results)[:k]
+
+    async def search_by_query(self, query: str, k: int = None) -> List[Dict[str, str]]:
+        """
+        Search images by text query using SerpAPI Google Images.
+
+        Args:
+            query: Text query for image search
+            k: Number of results to return
+
+        Returns:
+            List of dictionaries containing title, thumbnail, and link
+        """
+        if k is None:
+            k = self.config.DEFAULT_IMAGE_RESULTS
+
+        if not self.config.SERPAPI_API_KEY:
+            raise ValueError("SERPAPI_API_KEY is required for image search by query")
+
+        async with aiohttp.ClientSession() as session:
+            params = {
+                "engine": "google_images",
+                "api_key": self.config.SERPAPI_API_KEY,
+                "q": query,
+            }
+            results: List[Dict[str, str]] = []
+            try:
+                async with session.get(self.config.SERPAPI_URL, params=params, timeout=self.config.REQUEST_TIMEOUT) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        print(f"[WARN] google_images (text) HTTP {resp.status}: {error_text}")
+                        return []
+                    data = await resp.json()
+            except Exception as e:
+                print(f"[WARN] google_images (text) request failed: {e}")
+                return []
+
+            items = data.get("images_results", [])
+            for item in items:
+                entry = self._extract_search_result(item)
+                if entry and entry["link"] and entry["thumbnail"]:
+                    results.append(entry)
+                if len(results) >= k:
+                    break
+
+            return self._deduplicate_results(results)[:k]
     
     def _extract_search_result(self, item: dict) -> Dict[str, str]:
         """Extract and normalize search result from API response"""

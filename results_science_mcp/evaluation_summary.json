@@ -1,0 +1,30 @@
+{
+  "timestamp": "2025-12-11T19:55:37.115743",
+  "evaluation_metrics": [
+    "exact_match"
+  ],
+  "metrics_statistics": {
+    "exact_match": {
+      "total_items": 3,
+      "successful_items": 0,
+      "failed_items": 3,
+      "average_score": 0.0,
+      "success_rate": 0.0
+    }
+  },
+  "execution_time": {
+    "total_seconds": 220.95513772964478,
+    "formatted": "00:03:40",
+    "start_time": "2025-12-11 19:51:56",
+    "end_time": "2025-12-11 19:55:36"
+  },
+  "configuration": {
+    "num_rollouts": 3,
+    "env_mode": "http_mcp_search"
+  },
+  "tasks_summary": {
+    "total_tasks": 3,
+    "successful_predictions": 3,
+    "failed_predictions": 0
+  }
+}

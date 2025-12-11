@@ -148,7 +148,7 @@ class ImageProcessor:
             # === 关键：按需加载 ===
             source_item = image_sources[token]
             
-            # 拦截逻辑：禁止二次裁切
+            # 拦截逻辑：禁止二次裁切（通过文件名标记与 URL 子串同时判断）
             url_str = source_item.get("image_url", {}).get("url", "")
             if self.CROP_MARKER in url_str:
                 msg = f"Error: recursive cropping is not allowed. Image <{token}> is already a cropped fragment."

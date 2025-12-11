@@ -1,0 +1,35 @@
+[
+  {
+    "task_id": "001_Science_Biology_L1_p1_t1_m0_r1_w1_c0_g3",
+    "predicted_answer": "Reverse image search did not yield relevant results about the computer program or the institution where it was developed. However, the image itself resembles molecular modeling visualizations, commonly produced by programs like PyMOL or Chimera, which are often associated with research institutions.\n\nTo answer your question accurately, could you specify the name of the program used to generate the image? This will help identify the institution and its founding year. If you are unsure, I can attempt to identify the program based on the image style using a follow-up search. Please let me know how you'd like to proceed!",
+    "ground_truth": "2020",
+    "scores": {
+      "exact_match": 0.0
+    },
+    "is_correct": {
+      "exact_match": false
+    }
+  },
+  {
+    "task_id": "002_Science_Biology_L2_p1_t5_m1_r2_w0_c2_g8",
+    "predicted_answer": "Let's break down the question and the answer process:\n\n1. **Extinct Species & Their Extinction Years (from image):**\n   - The skeleton on the left in the image is a Steller's sea cow; it went extinct in 1768 [(source)](https://www.linkedin.com/pulse/stellers-sea-cow-extinct-1768-david-marinelli-1c).\n   - The bird on the right is a passenger pigeon, which went extinct in 1914 [(source)](https://en.wikipedia.org/wiki/Passenger_pigeon).\n\n2. **Difference Between Extinction Years:**\n   - 1914 (Passenger Pigeon) minus 1768 (Steller's Sea Cow) = **146**\n\n3. **WHO Executive Board Session:**\n   - The WHO Executive Board's 146th session matches this number. It was held in Geneva, Switzerland [(source)](https://www.who.int/about/governance/executive-board/executive-board-146th-session).\n\n4. **Country to the West of Switzerland:**\n   - According to maps and geographical sources, **France** is directly to the west of Switzerland [(source)](https://www.worldatlas.com/articles/what-countries-border-switzerland.html).\n\n5. **Colors in the National Flag of France:**\n   - The French flag consists of 3 colors: Blue, White, and Red [(source)](https://en.wikipedia.org/wiki/Flag_of_France).\n\n**Final Answer:**  \nThere are **three colors** in the national flag of the country that lies to the west of the country where this session of the WHO Executive Board was held.",
+    "ground_truth": "3",
+    "scores": {
+      "exact_match": 0.0
+    },
+    "is_correct": {
+      "exact_match": false
+    }
+  },
+  {
+    "task_id": "003_Science_Biology_L3_p2_t5_m1_r2_w1_c0_g9",
+    "predicted_answer": "Let's break down and answer the question step by step:\n\n## 1. Organism in Figure 1\nThe organism in <image_1> is the woolly mammoth. Geneticists have planned to resurrect it.\n\n## 2. The Additional Species & University of Melbourne Collaboration\nSearching for \"organism geneticist planned to resurrect University of Melbourne project\" reveals that the University of Melbourne is collaborating to revive the thylacine (Tasmanian tiger).\n- Source: [University of Melbourne newsroom](https://www.unimelb.edu.au/newsroom/news/2022/august/lab-takes-giant-leap-toward-thylacine-de-extinction-with-colossal-genetic-engineering-technology-partnership2)\n\n## 3. Country Associated with Figure 2 and 2024 Sports Event\nThe country in <image_2> is France (houses on Parisian streets). France is hosting the 2024 Summer Olympics.\n- Source: [2024 Summer Olympics Wikipedia](https://en.wikipedia.org/wiki/2024_Summer_Olympics)\n\n## 4. Extinction Year of the Second Species (Thylacine)\nThe thylacine (Tasmanian tiger) was declared extinct in 1936.\n- Source: [Thylacine Wikipedia](https://en.wikipedia.org/wiki/Thylacine)\n\n## 5. Which Country Hosted the Same Event (Summer Olympics) in 1936?\nThe 1936 Summer Olympics were hosted by Germany, specifically Berlin.\n- Source: [1936 Summer Olympics Wikipedia](https://en.wikipedia.org/wiki/1936_Summer_Olympics)\n\n## 6. The National Flag's Central Emblem Color (Germany, 1936)\nThe national flag of Nazi Germany (1935–1945) used for official purposes at the time had a central emblem: the swastika. The central emblem (swastika) was black, set within a white circle.\n- Source: [Flag of Nazi Germany Wikipedia](https://en.wikipedia.org/wiki/Flag_of_Nazi_Germany)\n\n---\n\n**Final Answer:**  \nThe color of the central emblem on the national flag of the country that hosted the Summer Olympics in the same year the thylacine went extinct (Germany, 1936) was **black** (the black swastika).",
+    "ground_truth": "black",
+    "scores": {
+      "exact_match": 0.0
+    },
+    "is_correct": {
+      "exact_match": false
+    }
+  }
+]

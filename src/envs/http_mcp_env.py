@@ -87,6 +87,19 @@ class HttpMCPEnv:
         self.initial_observation = None
         self.allocated_resources = {}
         self._tools_initialized = False
+        # 顺序编号：用于为工具产生的图片生成连续的 <obs_i> token
+        self._obs_counter = 0
+
+        # 5. 工具白名单（优先策略）
+        # 优先使用传入的 tool_whitelist；否则尝试从环境变量 MCP_TOOL_WHITELIST 读取（逗号分隔）
+        whitelist_arg = kwargs.get("tool_whitelist")
+        if isinstance(whitelist_arg, (list, tuple, set)):
+            self._tool_whitelist = {str(x).strip() for x in whitelist_arg if str(x).strip()}
+        elif isinstance(whitelist_arg, str):
+            self._tool_whitelist = {x.strip() for x in whitelist_arg.split(',') if x.strip()}
+        else:
+            env_wl = os.environ.get("MCP_TOOL_WHITELIST", "")
+            self._tool_whitelist = {x.strip() for x in env_wl.split(',') if x.strip()} if env_wl else set()
 
         # 初始化持久事件循环
         self._loop = asyncio.new_event_loop()
@@ -243,6 +256,41 @@ class HttpMCPEnv:
                     "text": f"Accessibility Tree:\n{initial_obs['accessibility_tree']}"
                 })
 
+        # [新增] 注入任务输入图片（如由子类设置的 self.input_images）
+        # 支持两种形式：
+        # - base64 数据：{"b64": "..."}
+        # - 远程 URL：{"url": "https://..."}
+        # 若同时存在，则都注入，便于模型预览与工具调用（例如反向图搜需要 URL）
+        # 注意：图片标记使用成对标签，例如 <image_1> ... </image_1>
+        input_images = getattr(self, "input_images", None)
+        if isinstance(input_images, list) and input_images:
+            for idx, img in enumerate(input_images, start=1):
+                open_token = f"<image_{idx}>"
+                close_token = f"</image_{idx}>"
+                if isinstance(img, dict):
+                    b64 = img.get("b64")
+                    url = img.get("url")
+                    # 始终先输出纯 Token 行，确保匹配提取逻辑 (<token> 必须是文本项最后)
+                    user_content.append({"type": "text", "text": open_token})
+                    if b64:
+                        user_content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64}",
+                                "detail": "high"
+                            }
+                        })
+                    elif url:
+                        user_content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url,
+                                "detail": "high"
+                            }
+                        })
+                    # 结尾关闭 Token（供可读性；裁切索引不依赖该行）
+                    user_content.append({"type": "text", "text": close_token})
+
         messages.append({"role": "user", "content": user_content})
 
         # === 减少日志：移除用户消息内容检查 ===
@@ -306,23 +354,25 @@ class HttpMCPEnv:
                             })
 
                             if image_list:
-                                user_content_blocks = []
-                                user_content_blocks.append({
-                                    "type": "text", 
-                                    "text": f"Observation from tool '{tool_name}' (Screenshots):"
-                                })
+                                # 将工具返回的图片统一包裹为 <obs_i> ... </obs_i>
+                                obs_blocks = []
                                 for img_b64 in image_list:
-                                    user_content_blocks.append({
+                                    self._obs_counter += 1
+                                    open_obs = f"<obs_{self._obs_counter}>"
+                                    close_obs = f"</obs_{self._obs_counter}>"
+                                    # 开标签
+                                    obs_blocks.append({"type": "text", "text": open_obs})
+                                    # 图片
+                                    obs_blocks.append({
                                         "type": "image_url",
                                         "image_url": {
                                             "url": f"data:image/png;base64,{img_b64}",
                                             "detail": "high"
                                         }
                                     })
-                                messages.append({
-                                    "role": "user",
-                                    "content": user_content_blocks
-                                })
+                                    # 闭标签（可读性）
+                                    obs_blocks.append({"type": "text", "text": close_obs})
+                                messages.append({"role": "user", "content": obs_blocks})
 
                     else:
                         # 减少日志：最终答案产生时不再输出
@@ -496,8 +546,8 @@ class HttpMCPEnv:
             # logger.info(f"[{self.worker_id}] Fetching tools from MCP Server...")
             mcp_tools = self._list_tools_sync()
 
-            # 1. 显式黑名单（保留以防万一）
-            blacklist = {
+            # 1. 默认为白名单优先（如未配置白名单，则回退到黑名单与隐藏标记过滤）
+            default_blacklist = {
                 "get_observation", "evaluate_task",
                 "allocate_batch_resources", "setup_batch_resources",
                 "get_batch_initial_observations", "setup_vm_session",
@@ -508,15 +558,17 @@ class HttpMCPEnv:
             self.local_tools = {}
 
             for t in mcp_tools:
-                # 检查是否在黑名单中
-                if t.name in blacklist:
-                    continue
-                
-                # 2. [新增] 检查 Description 中的隐藏标记
-                # t.description 来自函数的 Docstring，如果包含 [HIDDEN] 则跳过
-                description = t.description or ""
-                if description.startswith("[HIDDEN]"):
-                    continue
+                # 1) 白名单优先：若配置了白名单，则仅允许白名单内的工具
+                if self._tool_whitelist:
+                    if t.name not in self._tool_whitelist:
+                        continue
+                else:
+                    # 2) 未设置白名单时，使用黑名单 + [HIDDEN] 过滤作为兜底策略
+                    if t.name in default_blacklist:
+                        continue
+                    description = t.description or ""
+                    if description.startswith("[HIDDEN]"):
+                        continue
                 
                 valid_tools.append(t)
                 
@@ -626,8 +678,26 @@ class HttpMCPEnv:
         if isinstance(arguments, dict) and "worker_id" not in arguments:
             arguments["worker_id"] = self.worker_id
 
+        # 记录调用日志（截断长参数）
+        try:
+            if isinstance(arguments, dict):
+                safe_args = dict(arguments)
+                if "messages" in safe_args:
+                    msgs = safe_args["messages"]
+                    safe_args["messages"] = f"[len={len(msgs)}]"
+            else:
+                safe_args = arguments
+            logger.info(f"[{self.worker_id}] 🔧 Tool call -> {name} args={safe_args}")
+        except Exception:
+            pass
+
         # 发起同步工具调用
-        res: CallToolResult = self._run_sync(self.mcp_client.call_tool(name, arguments))
+        try:
+            res: CallToolResult = self._run_sync(self.mcp_client.call_tool(name, arguments))
+        except Exception as e:
+            logger.error(f"[{self.worker_id}] ❌ Tool call failed -> {name}: {e}")
+            # 返回标准化错误结构，避免上层崩溃
+            return {"text": json.dumps({"status": "error", "tool": name, "message": str(e)}, ensure_ascii=False), "images": []}
 
         # 特殊处理资源管理类工具（直接返回原始结果）
         resource_management_tools = {
@@ -664,7 +734,22 @@ class HttpMCPEnv:
             texts.append(str(res) if res else "Success")
 
         # 合并所有文本内容
-        output["text"] = "\n".join(texts)
+        output_text = "\n".join(texts)
+        output["text"] = output_text
+
+        # 记录返回摘要（截断）
+        try:
+            preview = output_text[:200].replace("\n", " ") if output_text else ""
+            logger.info(f"[{self.worker_id}] ✅ Tool result <- {name} text='{preview}' images={len(output['images'])}")
+            # 检测结构化错误并打印
+            try:
+                data = json.loads(output_text)
+                if isinstance(data, dict) and data.get("status") == "error":
+                    logger.error(f"[{self.worker_id}] ❗ Tool error <- {name}: {data.get('message')}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         return output
 
     def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:
@@ -676,9 +761,17 @@ class HttpMCPEnv:
                     text_content = getattr(content_item.resource, 'text', None)
                 
                 if text_content:
-                    return json.loads(text_content)
+                    try:
+                        data = json.loads(text_content)
+                        if isinstance(data, dict) and data.get("status") == "error":
+                            logger.error(f"[{self.worker_id}] Tool returned error payload: {data}")
+                        return data
+                    except Exception as e:
+                        logger.error(f"[{self.worker_id}] Failed to parse MCP response JSON: {e}")
+                        return {"status": "error", "message": str(e), "raw": text_content}
             return {"status": "unknown"}
         except Exception as e:
+            logger.error(f"[{self.worker_id}] Exception parsing MCP response: {e}")
             return {"status": "error", "message": str(e)}
 
     def get_inital_obs(self) -> Dict[str, Any]:

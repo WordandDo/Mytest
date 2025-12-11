@@ -11,16 +11,38 @@ from typing import Optional, List, Any, Union, Callable
 from dotenv import load_dotenv
 
 # 引入 MCP 标准类型
-from mcp.types import TextContent, ImageContent
+# Try to import MCP types; provide fallbacks for discovery environments
+try:
+    from mcp.types import TextContent, ImageContent  # type: ignore
+except Exception:
+    class TextContent(dict):
+        def __init__(self, type: str, text: str):
+            super().__init__({"type": type, "text": text})
+
+    class ImageContent(dict):
+        def __init__(self, type: str, data: str, mimeType: str):
+            super().__init__({"type": type, "data": data, "mimeType": mimeType})
 load_dotenv()
 cwd = os.getcwd()
 sys.path.append(cwd)
 sys.path.append(os.path.join(cwd, "src"))
 
-from mcp.server.fastmcp import FastMCP
-from src.utils.desktop_env.controllers.python import PythonController
-# [关键新增] 引入核心 Setup 执行器
-from src.utils.desktop_env.controllers.setup import execute_setup_steps
+# Optional import: FastMCP is not required for tool registration
+try:
+    from mcp.server.fastmcp import FastMCP  # type: ignore
+except Exception:
+    FastMCP = None  # type: ignore
+# Lazy/optional imports to avoid heavy dependencies during discovery
+try:
+    from src.utils.desktop_env.controllers.python import PythonController  # type: ignore
+except Exception:
+    PythonController = None  # type: ignore
+
+try:
+    from src.utils.desktop_env.controllers.setup import execute_setup_steps as _execute_setup_steps  # type: ignore
+except Exception:
+    def _execute_setup_steps(*args, **kwargs):  # type: ignore
+        raise ImportError("execute_setup_steps requires optional dependencies (e.g., playwright).")
 
 # 导入注册表
 from mcp_server.core.registry import ToolRegistry
@@ -29,7 +51,7 @@ from mcp_server.core.registry import ToolRegistry
 logger = logging.getLogger("VMPyAutoGUIServer")
 
 # 设置服务器名称为资源专属名称
-mcp = FastMCP("VM PyAutoGUI Gateway")
+mcp = FastMCP("VM PyAutoGUI Gateway") if FastMCP else None
 RESOURCE_API_URL = os.environ.get("RESOURCE_API_URL", "http://localhost:8000")
 
 print(f"🚀 Starting VM PyAutoGUI MCP Server (Registry Mode)")
@@ -73,7 +95,8 @@ async def _initialize_vm_session(worker_id: str, controller: PythonController, c
         if setup_steps:
             logger.info(f"[{worker_id}] Executing {len(setup_steps)} setup steps via SetupController...")
             # 调用 setup.py 中的强力配置逻辑
-            success = execute_setup_steps(controller, setup_steps)
+            # Call setup steps (may require optional deps)
+            success = _execute_setup_steps(controller, setup_steps)
             if not success:
                 logger.error(f"[{worker_id}] Setup steps execution failed")
                 return False

@@ -9,12 +9,10 @@
       "tool_groups": ["system_resource"]
     },
     {
-      "//": "PyAutoGUI 虚拟机环境配置",
-      "resource_type": "vm_pyautogui",
+      "//": "Search V2 工具（无状态 utility 组）",
+      "resource_type": "utility",
       "tool_groups": [
-        "pyautogui_lifecycle",
-        "desktop_action_pyautogui",
-        "pyautogui_observation"
+        "search_tools"
       ]
     }
     

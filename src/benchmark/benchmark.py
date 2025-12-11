@@ -12,8 +12,15 @@ from typing import List, Dict, Any, Optional, Union, Callable
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass
-import openai
-from tqdm import tqdm
+# Note: Avoid importing OpenAI SDK at module import time to keep
+#       this module usable without that dependency. We import lazily
+#       inside _llm_judgement only when needed.
+# tqdm is optional; provide a graceful fallback if not installed
+try:
+    from tqdm import tqdm  # type: ignore
+except Exception:
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==========================================
@@ -253,8 +260,37 @@ class Benchmark(ABC):
         # - OSWorld: config, evaluator, proxy
         # - Math/RAG: difficulty, category, source
         # - Custom: any other fields
-        metadata = {k: v for k, v in data.items()
-                   if k not in reserved_fields}
+        #
+        # Additionally, if an inner key named "metadata" exists and is a dict,
+        # we flatten its contents into the top-level metadata for easier access.
+        # Example:
+        #   {
+        #     "id": "...", "question": "...", "answer": "...",
+        #     "images": [...],
+        #     "metadata": {"domain": {"d1": "Science"}}
+        #   }
+        # Becomes:
+        #   item.metadata == {"images": [...], "domain": {"d1": "Science"}}
+        metadata: Dict[str, Any] = {}
+        for k, v in data.items():
+            if k in reserved_fields:
+                continue
+            # Flatten nested metadata dict if present
+            if k == 'metadata' and isinstance(v, dict):
+                # Keep existing keys if collision occurs; nested keys won't override
+                for inner_k, inner_v in v.items():
+                    if inner_k not in metadata:
+                        metadata[inner_k] = inner_v
+                continue
+            metadata[k] = v
+
+        # Normalize image paths inside metadata to match current folder structure
+        try:
+            if 'images' in metadata:
+                metadata['images'] = self._resolve_image_paths(metadata['images'])
+        except Exception:
+            # Keep original images on any resolution error to avoid breaking loads
+            pass
 
         return BenchmarkItem(
             id=item_id,
@@ -262,6 +298,67 @@ class Benchmark(ABC):
             answer=answer,
             metadata=metadata
         )
+
+    def _resolve_image_paths(self, images: Any) -> Any:
+        """
+        Resolve image paths in metadata to align with the dataset's folder layout.
+
+        Strategy (non-destructive):
+        - Absolute paths: keep as-is
+        - Relative paths: try multiple base directories, pick the first existing
+            1) Directory of the data file (self.data_path)
+            2) Parent directory of the data file (useful for paths like "./Science/..")
+        - If no candidate exists on disk, keep the original string
+
+        Supports both list[str] and single str.
+        """
+        # Normalize to list for unified processing
+        is_list_input = True
+        if isinstance(images, str):
+            images_list = [images]
+            is_list_input = False
+        elif isinstance(images, (list, tuple)):
+            images_list = list(images)
+        else:
+            # Unknown structure; return as-is
+            return images
+
+        data_dir = os.path.dirname(self.data_path) if self.data_path else ''
+        data_parent = os.path.dirname(data_dir) if data_dir else ''
+
+        resolved = []
+        for p in images_list:
+            if not isinstance(p, str):
+                resolved.append(p)
+                continue
+
+            p_stripped = p.strip()
+            # Absolute path
+            if os.path.isabs(p_stripped):
+                resolved.append(p_stripped)
+                continue
+
+            candidates = []
+            # Candidate: join with data file directory
+            if data_dir:
+                candidates.append(os.path.join(data_dir, p_stripped))
+
+            # Candidate: treat leading "./" as relative to parent of data_dir (dataset root)
+            if data_parent:
+                if p_stripped.startswith('./'):
+                    candidates.append(os.path.join(data_parent, p_stripped[2:]))
+                else:
+                    candidates.append(os.path.join(data_parent, p_stripped))
+
+            chosen = None
+            for c in candidates:
+                if os.path.exists(c):
+                    chosen = os.path.abspath(c)
+                    break
+
+            resolved.append(chosen if chosen is not None else p)
+
+        return resolved if is_list_input else resolved[0]
     
     def get_item(self, item_id: str) -> Optional[BenchmarkItem]:
         """Get a specific item by ID."""
@@ -474,6 +571,13 @@ class Benchmark(ABC):
     def _llm_judgement(self, question: str, labeled_answer: str, pred_answer: str, **kwargs) -> float:
         """Use LLM to judge the prediction."""
         # Use LLM to judge the prediction
+        # Lazy import to avoid hard dependency when not using this metric
+        try:
+            import openai  # type: ignore
+        except Exception:
+            # If OpenAI SDK is not available, return 0.0 rather than crashing
+            # so other metrics and dataset loading still function.
+            return 0.0
         PROMPT = f"""You are an evaluation assistant. Please determine if the model output is equivalent to the labeled answer.
 
 Question: {question}
@@ -616,37 +720,53 @@ def create_benchmark(data_path: str,
     return Benchmark(data_path=data_path, name=name, description=description)
 
 
-# Example usage
+# Example usage: verify Science dataset loading and image path resolution
 if __name__ == "__main__":
-    # Example: Load and evaluate a benchmark
-    print("Creating benchmark from HotPotQA data...")
-    benchmark = create_benchmark(
-        data_path="/home/a1/sdb/lb/Mytest/src/data/HotPotQA.jsonl",
-        name="Math Demo",
-        description="Simple math calculation benchmark"
-    )
-    
-    print(f"Loaded {len(benchmark.items)} items")
-    print(f"First item: {benchmark.items[0].question}")
-    
-    # Example predictions
-    predictions = {
-        "aaa": "### Calculator Results:\nsqrt(144) + pow(3,4)/6 + sin(pi/6)*10 = 30.5\n"
-    }
-    
-    # Evaluate with different metrics
-    print("\nEvaluating with exact match...")
-    results = benchmark.evaluate(predictions, metric="exact_match")
-    if results:
-        print(f"Exact match score: {results[0].score}")
-    else:
-        print("No results to evaluate - no predictions matched any benchmark items")
+    import glob
+    import os
 
-    print("\nEvaluating with F1 score...")
-    results = benchmark.evaluate(predictions, metric="f1_score")
-    if results:
-        print(f"F1 score: {results[0].score}")
-    else:
-        print("No results to evaluate - no predictions matched any benchmark items")
+    # Determine Science dataset directory relative to this file
+    src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    science_dir = os.path.join(src_dir, "data", "Science")
 
-    print(f"\nSummary: {benchmark.get_summary()}")
+    print("Verifying benchmark loading for:")
+    print(f" - {science_dir}")
+
+    science_jsons = sorted(glob.glob(os.path.join(science_dir, "*.json")))
+    print(f"Found {len(science_jsons)} JSON file(s)")
+
+    loaded_files = 0
+    total_images = 0
+    images_found = 0
+
+    for jf in science_jsons:
+        try:
+            benchmark = create_benchmark(data_path=jf, name="Science Loader Check")
+        except Exception as e:
+            print(f"Load error: {jf}: {e}")
+            continue
+
+        print(f"\nLoaded {len(benchmark.items)} item(s) from {jf}")
+        if not benchmark.items:
+            continue
+
+        item = benchmark.items[0]
+        imgs = (item.metadata or {}).get("images", [])
+        if isinstance(imgs, str):
+            imgs = [imgs]
+        exists = [os.path.exists(p) for p in imgs]
+
+        loaded_files += 1
+        total_images += len(imgs)
+        images_found += sum(1 for x in exists if x)
+
+        print(f"  - ID: {item.id}")
+        print(f"  - Question: {item.question[:80]}{'...' if len(item.question) > 80 else ''}")
+        print(f"  - Images: {imgs}")
+        print(f"  - Exists: {exists}")
+
+    print("\nSummary:")
+    print(f"  Science JSONs found: {len(science_jsons)}")
+    print(f"  Successfully loaded: {loaded_files}")
+    print(f"  Total images referenced: {total_images}")
+    print(f"  Images resolved on disk: {images_found}")

@@ -9,7 +9,7 @@ from .config.settings import Config
 
 
 class TextSearchService:
-    """Service for handling text search with AI-powered summaries"""
+    """Service for handling text search (raw sources without LLM summarization)"""
     
     def __init__(self):
         self.config = Config()
@@ -35,33 +35,23 @@ class TextSearchService:
                                   lang: Optional[str] = None,
                                   llm_model: Optional[str] = None) -> List[Dict[str, str]]:
         """
-        Perform text search and generate integrated AI summary
+        Perform text search and return raw sources (title + url) without Jina fetch or LLM summarization.
         """
         if k is None:
             k = self.config.DEFAULT_SEARCH_RESULTS
         if llm_model is None:
             llm_model = self.config.DEFAULT_LLM_MODEL
         
-        # Validate required API keys
-        self._validate_api_keys()
+        # Only require SERPAPI for raw search
+        if not self.config.SERPAPI_API_KEY:
+            raise ValueError("SERPAPI_API_KEY is required for text search")
         
         async with aiohttp.ClientSession() as session:
             # Step 1: Get search results from SerpAPI
             search_results = await self._get_search_results(session, query, k, region, lang)
             
-            if not search_results:
-                return []
-            
-            # Step 2: Fetch page content using Jina Reader
-            page_contents = await self._fetch_page_contents(session, search_results)
-            
-            # Step 3: Generate integrated summary from all content
-            integrated_summary = await self._generate_integrated_summary(
-                query, search_results, page_contents, llm_model
-            )
-            
-            # Step 4: Split integrated summary into passages and link to sources
-            return self._create_summarized_passages(search_results, integrated_summary)
+            # Directly return search results (title + url) without fetching page contents or LLM summarization
+            return search_results
     
     def _validate_api_keys(self):
         """Validate that required API keys are available"""

@@ -130,12 +130,25 @@ Please synthesize a high-quality Q&A pair based on the trajectory:
 - Clearly show the logical deduction process (Chain-of-Thought) that links the multiple steps to the single final fact.
 - **Observation Fidelity**: The 'observation' field in the JSON MUST contain direct excerpts.
 
-Return in JSON format:
+Return JSON EXACTLY in this schema (do not add extra fields):
 {{
-    "question": "question text (multi-hop but targeting a specific fact)",
-    "answer": "short phrase or single sentence",
-    "reasoning_steps": [ ... ]
+  "question": "question text (multi-hop but targeting a specific fact)",
+  "answer": "short phrase or single sentence",
+  "reasoning_steps": [
+    {{
+      "step": 1,
+      "description": "1 short sentence explaining how this step advances the answer",
+      "intent": "copy or paraphrase the intent relevant to this step",
+      "action": "the tool name used in this step (e.g., query_knowledge_base_dense)",
+      "observation": "a short DIRECT excerpt from the step's observation that supports the answer"
+    }},
+    ...
+  ]
 }}
+Rules for reasoning_steps:
+- Use 2-6 steps actually needed for the answer (no generic summaries).
+- Every step MUST include the tool name from the trajectory and a direct excerpt (<=200 chars) from the corresponding observation.
+- Keep descriptions brief; avoid meta commentary.
 """
         
         return prompt
@@ -156,4 +169,3 @@ Return in JSON format:
             formatted += f"  Observation: {obs_preview}\n"
         
         return formatted
-

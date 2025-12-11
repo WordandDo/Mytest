@@ -2,6 +2,8 @@
 import logging
 from typing import Dict, Any, Optional, List
 from .http_mcp_env import HttpMCPEnv
+import os
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -13,17 +15,25 @@ Your goal is to gather information, analyze content, and process visual data usi
 2. **Visual Analysis**: 
    - Use `reverse_image_search` to find the source or similar images of a given URL.
    - Use `crop_images_by_token` to focus on specific regions of an image referenced in the conversation history.
+3. **Image by Text**:
+   - Use `image_search_by_text` to find images related to a text query.
 
 ## Tool Usage Strategy
 1. **Search Broadly, Then Narrow Down**: Start with broad keywords, then refine based on initial results.
 2. **Cross-Verify**: If a search result is ambiguous, verify it with a second source or image search.
-3. **Visual Context**: When handling images, pay attention to the specific tokens (e.g., <img_1>) provided in the context.
+3. **Visual Context**: When handling images, pay attention to the specific tokens (e.g., <image_1>) provided in the context.
 4. **Efficiency**: Do not make redundant queries. Read the search summaries carefully.
 
 ## Answer Strategy
 - Provide comprehensive answers based strictly on the tool outputs.
 - Cite your sources (URLs) when providing facts.
 - If the final answer involves an image, ensure you have processed it correctly.
+
+## Image Token Policy
+- Input images from the task are wrapped as paired tokens: <image_1> ... </image_1>, <image_2> ... </image_2>, etc.
+- Images produced by tools (e.g., search results thumbnails) are wrapped in order as <obs_i> ... </obs_i> and can be cropped by referencing obs_i.
+- Cropped images must NOT be cropped again; they are not re-injected with tokens.
+- Prefer reusing already tokenized images (<image_k> / <obs_i>) for reverse-image or cropping steps.
 """
 
 class HttpMCPSearchEnv(HttpMCPEnv):
@@ -42,6 +52,16 @@ class HttpMCPSearchEnv(HttpMCPEnv):
         # 确保使用默认网关配置路径，除非外部覆盖
         if "gateway_config_path" not in kwargs:
             kwargs["gateway_config_path"] = "gateway_config.json"
+
+        # [新增] 默认白名单：只暴露 Search 相关工具给 Agent
+        # 若外部未显式传入 `tool_whitelist`，则启用以下默认集合
+        if not kwargs.get("tool_whitelist"):
+            kwargs["tool_whitelist"] = [
+                "web_search",
+                "reverse_image_search",
+                "crop_images_by_token",
+                "image_search_by_text",
+            ]
 
         # 初始化父类
         super().__init__(
@@ -109,3 +129,40 @@ class HttpMCPSearchEnv(HttpMCPEnv):
                 )
 
         return config
+
+    def run_task(self, task: Dict[str, Any], agent_config: Dict[str, Any], logger: logging.Logger) -> Dict[str, Any]:
+        """
+        扩展：支持问题相关图片输入。
+        - 从 task.metadata.images 读取图片（本地路径或 URL）
+        - 本地文件存在则转为 base64；URL 直接注入
+        - 基类会在用户消息中按 <img_n> 注入这些内容
+        """
+        # 清理之前的注入
+        self.input_images = []
+
+        try:
+            md = task.get("metadata", {}) if isinstance(task.get("metadata"), dict) else {}
+            imgs = md.get("images")
+            images: list[str] = []
+            if isinstance(imgs, str):
+                images = [imgs]
+            elif isinstance(imgs, list):
+                images = [x for x in imgs if isinstance(x, str)]
+
+            for p in images:
+                s = p.strip()
+                if s.startswith("http://") or s.startswith("https://"):
+                    self.input_images.append({"url": s})
+                    continue
+                if os.path.exists(s):
+                    try:
+                        with open(s, 'rb') as f:
+                            b64 = base64.b64encode(f.read()).decode('utf-8')
+                            self.input_images.append({"b64": b64})
+                    except Exception:
+                        # 忽略单个文件失败
+                        pass
+        except Exception:
+            self.input_images = []
+
+        return super().run_task(task, agent_config, logger)

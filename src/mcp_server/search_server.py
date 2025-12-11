@@ -76,28 +76,78 @@ async def web_search(query: str, k: int = 5, region: str = "cn") -> str:
         results = await service.search_with_summaries(query=query, k=k, region=region)
         return json.dumps(results, ensure_ascii=False, indent=2)
     except Exception as e:
-        return f"Error executing web search: {str(e)}"
+        import traceback
+        print(f"[ERROR] web_search failed: {e}\n{traceback.format_exc()}")
+        return json.dumps({"status": "error", "tool": "web_search", "message": str(e)}, ensure_ascii=False)
 
 @ToolRegistry.register_tool("search_tools")
-async def reverse_image_search(image_url: str, k: int = 3) -> str:
+async def image_search_by_text(query: str, k: int = 5) -> str:
     """
-    Search for information about an image using its URL (Google Lens/Reverse Search).
-    
+    Search images by text query and return list of image URLs (thumbnail/link).
+
     Args:
-        image_url: The URL of the image to search for.
-        k: Number of results to return.
+        query: Text query for images (e.g., "AIRFold logo")
+        k: Number of results to return
     """
     service = get_image_service()
     if not service:
         return "Error: ImageSearchService not available."
 
     try:
+        results = await service.search_by_query(query=query, k=k)
+        return json.dumps(results, ensure_ascii=False, indent=2)
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] image_search_by_text failed: {e}\n{traceback.format_exc()}")
+        return json.dumps({"status": "error", "tool": "image_search_by_text", "message": str(e)}, ensure_ascii=False)
+
+@ToolRegistry.register_tool("search_tools")
+async def reverse_image_search(
+    image_token: str, 
+    k: int = 3,
+    messages: Optional[List[Dict[str, Any]]] = None
+) -> str:
+    """
+    Search for information about an image using its token reference in the conversation history.
+    
+    Args:
+        image_token: The token identifier for the image (e.g., "img_target" for token <img_target>).
+        k: Number of results to return.
+        messages: (Optional) The conversation history containing images. Usually injected by the system, user doesn't need to provide.
+    """
+    # First try to get the image processor to extract image source from token
+    processor = get_image_processor()
+    if not processor:
+        return "Error: ImageProcessor not available."
+        
+    service = get_image_service()
+    if not service:
+        return "Error: ImageSearchService not available."
+
+    try:
+        # Extract image sources from messages
+        image_sources = {}
+        if messages:
+            image_sources.update(processor.extract_sources_from_messages(messages))
+        
+        # Find the image URL corresponding to the token
+        if image_token not in image_sources:
+            return f"Error: Image token '{image_token}' not found in conversation history."
+            
+        image_detail = image_sources[image_token]
+        image_url = image_detail.get("image_url", {}).get("url", "")
+        if not image_url:
+            return f"Error: Could not extract URL for image token '{image_token}'."
+        
+        # Perform reverse image search using the URL
         results = await service.search_by_image(image_input=image_url, k=k)
         return json.dumps(results, ensure_ascii=False, indent=2)
     except Exception as e:
-        return f"Error executing image search: {str(e)}"
+        import traceback
+        print(f"[ERROR] reverse_image_search failed: {e}\n{traceback.format_exc()}")
+        return json.dumps({"status": "error", "tool": "reverse_image_search", "message": str(e)}, ensure_ascii=False)
 
-@ToolRegistry.register_tool("search_tools", hidden=True)
+@ToolRegistry.register_tool("search_tools",hidden=True)
 async def upload_file_to_cloud(file_path: str) -> str:
     """
     Upload a local file (e.g., a screenshot taken by the agent) to cloud storage and get a public URL.
@@ -118,7 +168,9 @@ async def upload_file_to_cloud(file_path: str) -> str:
         result = await service.upload_single_image(path_obj)
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
-        return f"Error uploading file: {str(e)}"
+        import traceback
+        print(f"[ERROR] upload_file_to_cloud failed: {e}\n{traceback.format_exc()}")
+        return json.dumps({"status": "error", "tool": "upload_file_to_cloud", "message": str(e)}, ensure_ascii=False)
 
 @ToolRegistry.register_tool("search_tools")
 async def crop_images_by_token(
@@ -152,4 +204,6 @@ async def crop_images_by_token(
         )
         return json.dumps(results, ensure_ascii=False, indent=2)
     except Exception as e:
-        return f"Error cropping images: {str(e)}"
+        import traceback
+        print(f"[ERROR] crop_images_by_token failed: {e}\n{traceback.format_exc()}")
+        return json.dumps({"status": "error", "tool": "crop_images_by_token", "message": str(e)}, ensure_ascii=False)
