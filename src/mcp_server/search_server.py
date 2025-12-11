@@ -4,7 +4,8 @@ Type: Standalone/Stateless Pattern
 """
 import os
 import json
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Annotated
+from pydantic import Field
 from mcp_server.core.registry import ToolRegistry
 
 # 尝试导入 search_v2 服务
@@ -59,14 +60,17 @@ def get_image_processor():
 # ==============================================================================
 
 @ToolRegistry.register_tool("search_tools")
-async def web_search(query: str, k: int = 5, region: str = "cn") -> str:
+async def web_search(
+    query: Annotated[str, Field(description="Search keywords or question text.", min_length=1)],
+    k: Annotated[int, Field(description="Number of results to return; keep small to reduce noise.", ge=1, le=20)] = 5,
+    region: Annotated[str, Field(description="Lowercase region/country code such as 'cn' or 'us'.", pattern="^[a-z]{2}$")] = "cn",
+) -> str:
     """
-    Perform a web search to get relevant information and summaries.
-    
-    Args:
-        query: The search query string.
-        k: Number of results to return (default 5).
-        region: Search region code (e.g., 'cn', 'us').
+    Web search with summaries (stateless).
+    Format hints:
+    - query: plain text (no URLs needed unless part of the question)
+    - k: small integers (1-20) to control list length
+    - region: two-letter lowercase region code (e.g., cn/us); defaults to cn
     """
     service = get_text_service()
     if not service:
@@ -81,13 +85,13 @@ async def web_search(query: str, k: int = 5, region: str = "cn") -> str:
         return json.dumps({"status": "error", "tool": "web_search", "message": str(e)}, ensure_ascii=False)
 
 @ToolRegistry.register_tool("search_tools")
-async def image_search_by_text(query: str, k: int = 5) -> str:
+async def image_search_by_text(
+    query: Annotated[str, Field(description="Text query describing the target image (e.g., 'AIRFold logo').", min_length=1)],
+    k: Annotated[int, Field(description="Number of image results to return.", ge=1, le=20)] = 5,
+) -> str:
     """
-    Search images by text query and return list of image URLs (thumbnail/link).
-
-    Args:
-        query: Text query for images (e.g., "AIRFold logo")
-        k: Number of results to return
+    Search images by text and return URLs (thumbnail/full).
+    Keep k small (1-20). Provide concise, visual-friendly keywords.
     """
     service = get_image_service()
     if not service:
@@ -103,17 +107,15 @@ async def image_search_by_text(query: str, k: int = 5) -> str:
 
 @ToolRegistry.register_tool("search_tools")
 async def reverse_image_search(
-    image_token: str, 
-    k: int = 3,
+    image_token: Annotated[str, Field(description="Image token from conversation history, e.g., 'image_1' for <image_1>.", min_length=1)],
+    k: Annotated[int, Field(description="Number of matches to return.", ge=1, le=10)] = 3,
     messages: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """
-    Search for information about an image using its token reference in the conversation history.
-    
-    Args:
-        image_token: The token identifier for the image (e.g., "img_target" for token <img_target>).
-        k: Number of results to return.
-        messages: (Optional) The conversation history containing images. Usually injected by the system, user doesn't need to provide.
+    Reverse image search using a referenced image token from the chat.
+    Notes:
+    - image_token must match a token already present in messages (<image_x> or <obs_x>).
+    - messages is normally auto-injected by the client; callers usually omit it.
     """
     # First try to get the image processor to extract image source from token
     processor = get_image_processor()
@@ -148,12 +150,11 @@ async def reverse_image_search(
         return json.dumps({"status": "error", "tool": "reverse_image_search", "message": str(e)}, ensure_ascii=False)
 
 @ToolRegistry.register_tool("search_tools",hidden=True)
-async def upload_file_to_cloud(file_path: str) -> str:
+async def upload_file_to_cloud(
+    file_path: Annotated[str, Field(description="Absolute path to the local file to upload.", min_length=1)]
+) -> str:
     """
-    Upload a local file (e.g., a screenshot taken by the agent) to cloud storage and get a public URL.
-    
-    Args:
-        file_path: The absolute path to the local file.
+    [Hidden] Upload a local file (e.g., screenshot) to cloud storage and return a public URL.
     """
     service = get_cloud_service()
     if not service:
@@ -174,15 +175,18 @@ async def upload_file_to_cloud(file_path: str) -> str:
 
 @ToolRegistry.register_tool("search_tools")
 async def crop_images_by_token(
-    crop_config: Dict[str, List[int]],
+    crop_config: Annotated[
+        Dict[str, List[int]],
+        Field(description="Mapping of image tokens to crop boxes: {'<token>': [left, top, right, bottom]} (pixels).")
+    ],
     messages: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """
-    Crop specific regions from images in the conversation history based on tokens.
-
-    Args:
-        crop_config: Dictionary mapping tokens to crop boxes. Format: {"<token>": [left, top, right, bottom]}.
-        messages: (Optional) The conversation history containing images. usually injected by the system, user doesn't need to provide.
+    Crop regions from images referenced by tokens in the conversation history.
+    Requirements:
+    - Each crop box must be four integers: [left, top, right, bottom].
+    - tokens must match existing <image_x> or <obs_x> entries.
+    - messages is normally injected by the client.
     """
     service = get_image_processor()
     if not service:

@@ -32,6 +32,9 @@ def __getattr__(name):
             from .http_mcp_rag_env import HttpMCPRagEnv
             return HttpMCPRagEnv(**kwargs)
         return create_rag_environment
+    elif name == "HttpMCPVmEnv":
+        from .http_mcp_vm_env import HttpMCPVmEnv
+        return HttpMCPVmEnv
 
     # 3. 其他环境 (Math, Python, Web, OSWorld)
     # 注意：确保这些对应的 .py 文件真实存在，否则也会报类似的错
@@ -88,6 +91,7 @@ __all__ = [
     "WebEnvironment",
     "TBenchEnvironment",
     "OSWorldEnvironment",
+    "HttpMCPVmEnv",
     # Factory functions
     "create_rag_environment"
 ]

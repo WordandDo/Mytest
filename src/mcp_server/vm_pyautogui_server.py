@@ -7,8 +7,9 @@ import httpx
 import asyncio
 import logging
 import time
-from typing import Optional, List, Any, Union, Callable
+from typing import Optional, List, Any, Union, Callable, Annotated, Literal
 from dotenv import load_dotenv
+from pydantic import Field
 
 # 引入 MCP 标准类型
 # Try to import MCP types; provide fallbacks for discovery environments
@@ -62,6 +63,22 @@ GLOBAL_SESSIONS = {}
 # =============================================================================
 # 1. 核心共享逻辑 (Shared Core Logic)
 # =============================================================================
+
+async def _safe_release_resource(resource_id: str, worker_id: str, reason: str = ""):
+    """
+    尝试释放单个资源的保护性调用，用于初始化失败时的回滚。
+    """
+    if not resource_id:
+        return
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(
+                f"{RESOURCE_API_URL}/release",
+                json={"resource_id": resource_id, "worker_id": worker_id},
+                timeout=10
+            )
+        except Exception as e:
+            logger.error(f"[{worker_id}] Safe release failed for {resource_id} ({reason}): {e}")
 
 async def _initialize_vm_session(worker_id: str, controller: PythonController, config_data: Any, task_id: str = "unknown") -> bool:
     """
@@ -245,6 +262,7 @@ async def setup_pyautogui_session(config_name: str, task_id: str, worker_id: str
     ip = data.get("ip")
     port = data.get("port", 5000)
 
+    session_created = False
     try:
         # 2. 初始化控制器
         controller = PythonController(vm_ip=ip, server_port=port)
@@ -255,10 +273,13 @@ async def setup_pyautogui_session(config_name: str, task_id: str, worker_id: str
             "env_id": env_id,
             "task_id": task_id
         }
+        session_created = True
         
         # 3. 调用核心初始化逻辑
         if init_script:
-            await _initialize_vm_session(worker_id, controller, init_script, task_id)
+            init_ok = await _initialize_vm_session(worker_id, controller, init_script, task_id)
+            if not init_ok:
+                raise RuntimeError("VM initialization failed")
         
         # 4. 获取初始状态
         screenshot = controller.get_screenshot()
@@ -272,6 +293,9 @@ async def setup_pyautogui_session(config_name: str, task_id: str, worker_id: str
             }
         })
     except Exception as e:
+        await _safe_release_resource(env_id, worker_id, reason="setup_pyautogui_session")
+        if session_created:
+            await _cleanup_vm_session_local(worker_id)
         return json.dumps({"status": "error", "message": str(e)})
 
 @ToolRegistry.register_tool("pyautogui_lifecycle", hidden=True)
@@ -346,16 +370,47 @@ async def stop_pyautogui_recording(worker_id: str, save_path: str) -> str:
 # =============================================================================
 
 @ToolRegistry.register_tool("desktop_action_pyautogui")
-async def desktop_execute_python_script(worker_id: str, script: str) -> list:
-    """Execute a Python script in the desktop environment."""
+async def desktop_execute_python_script(
+    worker_id: Annotated[str, Field(description="Existing worker id returned by setup_pyautogui_session / allocate.")],
+    script: Annotated[
+        str,
+        Field(
+            description="Python statements to run inside the VM. pyautogui is pre-imported; keep scripts short/deterministic and add sleeps when waiting for UI updates.",
+            min_length=1,
+        ),
+    ],
+) -> list:
+    """
+    Run a PyAutoGUI-friendly Python script on the VM and then return an observation bundle.
+    Format requirements:
+    - Provide executable Python statements only (no shell, no input()).
+    - Use pyautogui.* calls directly; the module is already imported and FAILSAFE disabled.
+    - Keep scripts concise (e.g., <20 lines) and include time.sleep() when waiting for UI changes.
+    """
     ctrl = _get_controller(worker_id)
     return await _execute_and_capture(worker_id, lambda: 
         ctrl.execute_python_command(script)
     )
 
 @ToolRegistry.register_tool("desktop_action_pyautogui")
-async def desktop_mouse_button(worker_id: str, action: str, button: str = "left") -> list:
-    """Press down or release the mouse button."""
+async def desktop_mouse_button(
+    worker_id: Annotated[str, Field(description="Existing worker id returned by setup_pyautogui_session / allocate.")],
+    action: Annotated[
+        Literal["down", "up"],
+        Field(description="Use 'down' to press/hold the button and 'up' to release; lowercase only."),
+    ],
+    button: Annotated[
+        Literal["left", "right", "middle"],
+        Field(description="Mouse button to toggle; defaults to left."),
+    ] = "left",
+) -> list:
+    """
+    Press down or release a mouse button without moving the cursor.
+    Format requirements:
+    - action must be 'down' (press/hold) or 'up' (release).
+    - button must be one of: left, right, middle.
+    Use this to bracket drag actions or to emulate click-and-hold gestures.
+    """
     ctrl = _get_controller(worker_id)
     act_type = "MOUSE_DOWN" if action.lower() == "down" else "MOUSE_UP"
     return await _execute_and_capture(worker_id, lambda: 
@@ -363,8 +418,21 @@ async def desktop_mouse_button(worker_id: str, action: str, button: str = "left"
     )
 
 @ToolRegistry.register_tool("desktop_action_pyautogui")
-async def desktop_control(worker_id: str, action: str) -> list:
-    """Execute a control action."""
+async def desktop_control(
+    worker_id: Annotated[str, Field(description="Existing worker id returned by setup_pyautogui_session / allocate.")],
+    action: Annotated[
+        Literal["WAIT", "DONE", "FAIL"],
+        Field(description="Control signals only: WAIT (pause and keep session), DONE (goal achieved), FAIL (task blocked/irrecoverable)."),
+    ],
+) -> list:
+    """
+    Send a control-only signal to the orchestrator; does not change cursor/keyboard state.
+    Allowed actions:
+    - WAIT: brief pause to fetch a fresh screenshot before next step.
+    - DONE: task completed; stop planning further UI actions.
+    - FAIL: unable to complete task; surface the current state.
+    A screenshot and accessibility tree are still returned for transparency.
+    """
     ctrl = _get_controller(worker_id)
     act_str = action.upper()
     return await _execute_and_capture(worker_id, lambda: 

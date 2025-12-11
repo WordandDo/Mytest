@@ -5,7 +5,8 @@ import httpx
 import importlib
 import logging
 import asyncio
-from typing import Any
+from typing import Any, Annotated
+from pydantic import Field
 from mcp_server.core.registry import ToolRegistry
 
 # 从环境变量获取 API 地址
@@ -15,8 +16,12 @@ logger = logging.getLogger("SystemTools")
 
 # 注册为 "system_resource" 组
 @ToolRegistry.register_tool("system_resource",hidden=True)
-async def allocate_batch_resources(worker_id: str, resource_types: list[str], timeout: int = 600) -> str:
-    """[System Tool] Atomically allocate a batch of resources."""
+async def allocate_batch_resources(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    resource_types: Annotated[list[str], Field(description="Resource types to lock, e.g., ['vm_pyautogui', 'rag'].", min_length=1)],
+    timeout: Annotated[int, Field(description="Seconds to wait in the allocation queue.", ge=1, le=1200)] = 600
+) -> str:
+    """[HIDDEN System Tool] Atomically allocate a batch of resources via Resource API."""
     if not resource_types:
         return json.dumps({"status": "error", "message": "resource_types cannot be empty"})
 
@@ -40,19 +45,27 @@ async def allocate_batch_resources(worker_id: str, resource_types: list[str], ti
             return json.dumps({"status": "error", "message": f"System Allocation Failed: {str(e)}"})
 
 @ToolRegistry.register_tool("system_resource",hidden=True)
-async def allocate_single_resource(worker_id: str, resource_type: str, timeout: int = 600) -> str:
-    """[System Tool] Allocate a single resource."""
+async def allocate_single_resource(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    resource_type: Annotated[str, Field(description="Single resource type to lock, e.g., 'vm_pyautogui'.", min_length=1)],
+    timeout: Annotated[int, Field(description="Seconds to wait in the allocation queue.", ge=1, le=1200)] = 600
+) -> str:
+    """[HIDDEN System Tool] Allocate a single resource (thin wrapper around batch allocation)."""
     if not resource_type:
         return json.dumps({"status": "error", "message": "resource_type cannot be empty"})
     return await allocate_batch_resources(worker_id, [resource_type], timeout)
 
 @ToolRegistry.register_tool("system_resource", hidden=True)
-async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> str:
-    """[System Tool] Batch release resources and trigger local cleanup."""
+async def release_batch_resources(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    resource_ids: Annotated[list[str], Field(description="Resource IDs to release; accepts multiple ids.", min_length=1)]
+) -> str:
+    """[HIDDEN System Tool] Batch release resources and trigger local cleanup."""
     if not resource_ids:
         return json.dumps({"status": "success", "message": "No resources to release"})
 
     results = {}
+    failed_ids = []
     async with httpx.AsyncClient() as client:
         for rid in resource_ids:
             try:
@@ -65,18 +78,26 @@ async def release_batch_resources(worker_id: str, resource_ids: list[str]) -> st
                     results[rid] = "released"
                 else:
                     results[rid] = f"failed: {resp.status_code}"
+                    failed_ids.append(rid)
             except Exception as e:
                 logger.error(f"Failed to release resource {rid}: {e}")
                 results[rid] = f"error: {str(e)}"
+                failed_ids.append(rid)
+
+    # 回滚保险：无论 release 是否成功都清理 Gateway 侧 session，避免悬挂引用
+    try:
+        await _cleanup_resource_sessions(worker_id)
+    except Exception as e:
+        logger.error(f"[{worker_id}] Cleanup after release failed: {e}")
     
-    # 清理 Gateway 侧的全局会话缓存
-    await _cleanup_resource_sessions(worker_id)
-    
-    return json.dumps({"status": "completed", "details": results})
+    status = "success" if not failed_ids else "partial_error"
+    return json.dumps({"status": status, "details": results, "failed_ids": failed_ids})
 
 @ToolRegistry.register_tool("system_resource", hidden=True)
-async def get_batch_initial_observations(worker_id: str) -> str:
-    """[System Tool] Retrieve initial observations from local session controllers."""
+async def get_batch_initial_observations(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")]
+) -> str:
+    """[HIDDEN System Tool] Retrieve initial observations (screenshot/a11y) from active VM sessions."""
     observations = {}
     
     vm_module_map = {
@@ -120,8 +141,12 @@ async def get_batch_initial_observations(worker_id: str) -> str:
     return json.dumps(observations)
 
 @ToolRegistry.register_tool("system_resource", hidden=True)
-async def setup_batch_resources(worker_id: str, resource_init_configs: dict, allocated_resources: dict = {}) -> str:
-    """[System Tool] Dynamically initialize resources."""
+async def setup_batch_resources(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    resource_init_configs: Annotated[dict, Field(description="Per-resource init payloads, e.g., {'vm_pyautogui': {'content': {...}}}.")],
+    allocated_resources: Annotated[dict, Field(description="Resource allocation results from allocate_batch_resources.")] = {}
+) -> str:
+    """[HIDDEN System Tool] Dynamically initialize resources using module-specific hooks."""
     results = {}
     overall_success = True
 

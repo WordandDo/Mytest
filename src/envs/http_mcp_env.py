@@ -595,6 +595,14 @@ class HttpMCPEnv:
 
     def _convert_schema_to_params(self, schema: Dict[str, Any]) -> List[Dict[str, Any]]:
         """将 JSON Schema properties 转换为参数列表格式"""
+        def _extract_constraints(node: Dict[str, Any]) -> Dict[str, Any]:
+            """提取常见约束信息，便于在 UI/agent 侧透出格式要求。"""
+            constraints: Dict[str, Any] = {}
+            for key in ("enum", "const", "pattern", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems", "default"):
+                if key in node:
+                    constraints[key] = node[key]
+            return constraints
+
         params = []
         if not schema or "properties" not in schema:
             return params
@@ -612,9 +620,17 @@ class HttpMCPEnv:
                 "description": prop.get("description", ""),
                 "required": name in required_set
             }
-            if param_def["type"] == "array" and "items" in prop:
-                 param_def["array_type"] = prop["items"].get("type", "string")
-                 
+            # 追加约束信息（enum、pattern、长度/数值范围等）
+            param_def.update(_extract_constraints(prop))
+
+            # 为数组类型补充 items 约束（如 enum、pattern）
+            if param_def["type"] == "array" and "items" in prop and isinstance(prop["items"], dict):
+                item_constraints = _extract_constraints(prop["items"])
+                item_type = prop["items"].get("type", "string")
+                param_def["array_type"] = item_type
+                if item_constraints:
+                    param_def["array_constraints"] = item_constraints
+            
             params.append(param_def)
         return params
 
@@ -774,77 +790,12 @@ class HttpMCPEnv:
             logger.error(f"[{self.worker_id}] Exception parsing MCP response: {e}")
             return {"status": "error", "message": str(e)}
 
-    def get_inital_obs(self) -> Dict[str, Any]:
-        """调用 MCP 获取初始观察，并应用黑名单过滤"""
-        # 减少日志：移除初始观察获取日志
-        # logger.info(f"[{self.worker_id}] Fetching initial observations...")
-
-        combined_obs = {}
-        self.initial_observation = None # 重置主观察
-
-        # 1. 从 self.config (已合并任务 metadata) 获取黑名单设置
-        # resource_blacklist: 资源类型黑名单列表，例如 ['rag', 'vm_pyautogui']
-        resource_blacklist = self.config.get("observation_blacklist", [])
-        # content_blacklist: 资源内容细粒度黑名单，例如 {'vm_computer_13': ['accessibility_tree']}
-        content_blacklist = self.config.get("observation_content_blacklist", {})
-
-        try:
-            # 调用系统工具获取所有资源的初始观察
-            res = self._call_tool_sync("get_batch_initial_observations", {"worker_id": self.worker_id})
-            data = self._parse_mcp_response(res)
-
-            # === 减少日志：移除原始观察数据和过滤后观察数据的详细日志 ===
-            # safe_data = self._truncate_data(data, max_len=100)
-            # logger.info(f"[{self.worker_id}] [OBS_LOG] Raw observation data from MCP (Truncated): {json.dumps(safe_data, indent=2, ensure_ascii=False)}")
-
-            if isinstance(data, dict) and "error" not in data:
-                # 2. 遍历并应用黑名单过滤
-                for resource_type, obs_content in data.items():
-                    # A. 资源类型黑名单过滤
-                    if resource_type in resource_blacklist:
-                        # 减少日志：移除黑名单跳过日志
-                        # logger.info(f"[{self.worker_id}] Blacklisted resource observation skipped: {resource_type}")
-                        continue
-                        
-                    # B. 观察内容细粒度过滤
-                    filtered_obs_content = obs_content
-                    if resource_type in content_blacklist and isinstance(obs_content, dict):
-                        # 对资源内容进行拷贝，避免修改原始数据
-                        filtered_obs_content = obs_content.copy()
-                        keys_to_remove = content_blacklist[resource_type]
-                        
-                        for key in keys_to_remove:
-                            if key in filtered_obs_content:
-                                del filtered_obs_content[key]
-                                # 减少日志：移除黑名单内容移除日志
-                                # logger.info(f"[{self.worker_id}] Blacklisted observation content removed: {resource_type}.{key}")
-
-                    combined_obs[resource_type] = filtered_obs_content
-
-                    # 3. 动态确定主要观察 (用于 LLM 注入)
-                    # 优先将视觉环境（vm/desktop相关的）且非空的观察设为主观察
-                    # 注意：这里使用启发式检查，同时过滤掉内容为空或只剩少量键的观察
-                    if self.initial_observation is None and ("vm" in resource_type.lower() or "desktop" in resource_type.lower()):
-                         # 确保过滤后仍包含用于主观察的必要内容 (如 screenshot)
-                         if filtered_obs_content and any(key in filtered_obs_content for key in ["screenshot", "accessibility_tree", "text"]):
-                            self.initial_observation = filtered_obs_content
-                         
-            else:
-                logger.warning(f"[{self.worker_id}] Failed to fetch obs: {data.get('error')}")
-
-            # === 减少日志：移除最终观察和主观察的详细日志 ===
-            # safe_obs = self._truncate_data(combined_obs, max_len=100)
-            # logger.info(f"[{self.worker_id}] [OBS_LOG] Final combined observations (Filtered & Truncated): {json.dumps(safe_obs, indent=2, ensure_ascii=False)}")
-            # if self.initial_observation:
-            #     logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation SET. Keys: {list(self.initial_observation.keys())}")
-            # else:
-            #     logger.info(f"[{self.worker_id}] [OBS_LOG] Primary initial_observation is None.")
-
-            return combined_obs
-        except Exception as e:
-            logger.error(f"[{self.worker_id}] Obs fetch error: {e}")
-            # 即使失败，也要返回已收集的部分观察结果
-            return combined_obs
+    def fetch_initial_observations(self) -> Dict[str, Any]:
+        """
+        标准化的初始观察获取入口。
+        基类默认不抓取任何观察；需要观察能力的环境请在子类中覆盖。
+        """
+        return {}
 
     def allocate_resource(self, worker_id: str, resource_init_data: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -890,8 +841,8 @@ class HttpMCPEnv:
                 self.release_resource(self.worker_id)
                 return False
 
-            # 3. 获取初始观察
-            self.get_inital_obs()
+            # 3. 获取初始观察（由子类决定是否实现）
+            self.fetch_initial_observations()
             return True
 
         except Exception as e:

@@ -6,8 +6,9 @@ import json
 import httpx
 import asyncio
 import logging
-from typing import Optional, List, Any, Union, Callable
+from typing import Optional, List, Any, Union, Callable, Annotated, Literal
 from dotenv import load_dotenv
+from pydantic import Field
 
 try:
     from mcp.types import TextContent, ImageContent  # type: ignore
@@ -53,6 +54,20 @@ GLOBAL_SESSIONS = {}
 # =============================================================================
 # 1. 核心共享逻辑 (Shared Core Logic)
 # =============================================================================
+
+async def _safe_release_resource(resource_id: str, worker_id: str, reason: str = ""):
+    """安全释放资源，用于初始化失败时的回滚。"""
+    if not resource_id:
+        return
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(
+                f"{RESOURCE_API_URL}/release",
+                json={"resource_id": resource_id, "worker_id": worker_id},
+                timeout=10
+            )
+        except Exception as e:
+            logger.error(f"[{worker_id}] Safe release failed for {resource_id} ({reason}): {e}")
 
 async def _initialize_vm_session(worker_id: str, controller: PythonController, config_data: Any, task_id: str = "unknown") -> bool:
     """[Core Logic] 统一 VM 会话初始化逻辑"""
@@ -180,6 +195,7 @@ async def setup_computer_13_session(config_name: str, task_id: str, worker_id: s
     ip = data.get("ip")
     port = data.get("port", 5000)
 
+    session_created = False
     try:
         controller = PythonController(vm_ip=ip, server_port=port)
         GLOBAL_SESSIONS[worker_id] = {
@@ -187,9 +203,12 @@ async def setup_computer_13_session(config_name: str, task_id: str, worker_id: s
             "env_id": env_id,
             "task_id": task_id
         }
+        session_created = True
         
         if init_script:
-            await _initialize_vm_session(worker_id, controller, init_script, task_id)
+            init_ok = await _initialize_vm_session(worker_id, controller, init_script, task_id)
+            if not init_ok:
+                raise RuntimeError("VM initialization failed")
         
         screenshot = controller.get_screenshot()
         screenshot_b64 = base64.b64encode(screenshot).decode('utf-8') if screenshot else ""
@@ -202,6 +221,9 @@ async def setup_computer_13_session(config_name: str, task_id: str, worker_id: s
             }
         })
     except Exception as e:
+        await _safe_release_resource(env_id, worker_id, reason="setup_computer_13_session")
+        if session_created:
+            await _cleanup_vm_session_local(worker_id)
         return json.dumps({"status": "error", "message": str(e)})
 
 @ToolRegistry.register_tool("computer_lifecycle", hidden=True)
@@ -231,8 +253,10 @@ def _ctrl(worker_id: str):
 
 # --- 观察工具 ---
 @ToolRegistry.register_tool("computer13_observation", hidden=True)
-async def start_computer13_recording(worker_id: str) -> str:
-    """Start screen recording for Computer-13 VM."""
+async def start_computer13_recording(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")]
+) -> str:
+    """Start screen recording for Computer-13 VM (hidden)."""
     try:
         ctrl = _ctrl(worker_id)
         ctrl.start_recording()
@@ -242,8 +266,11 @@ async def start_computer13_recording(worker_id: str) -> str:
 
 
 @ToolRegistry.register_tool("computer13_observation", hidden=True)
-async def stop_computer13_recording(worker_id: str, save_path: str) -> str:
-    """Stop recording and save file for Computer-13 VM."""
+async def stop_computer13_recording(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    save_path: Annotated[str, Field(description="Absolute path to save the recording file.", min_length=1)]
+) -> str:
+    """Stop recording and save file for Computer-13 VM (hidden)."""
     try:
         ctrl = _ctrl(worker_id)
         directory = os.path.dirname(save_path)
@@ -257,14 +284,27 @@ async def stop_computer13_recording(worker_id: str, save_path: str) -> str:
 
 # --- 基础动作工具 ---
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_execute_python_script(worker_id: str, script: str) -> list:
-    """Execute a Python script in the Computer-13 desktop VM."""
+async def computer13_execute_python_script(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    script: Annotated[
+        str,
+        Field(description="Python statements to run inside the VM. pyautogui is pre-imported; keep scripts short and deterministic.", min_length=1)
+    ]
+) -> list:
+    """
+    Execute a Python snippet inside the VM (pyautogui pre-imported, FAILSAFE disabled).
+    Include time.sleep() where UI latency is expected; avoid input()/long loops.
+    """
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_python_command(script))
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_mouse_move(worker_id: str, x: int, y: int) -> list:
+async def computer13_mouse_move(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    x: Annotated[int, Field(description="Target X coordinate in pixels (absolute).")],
+    y: Annotated[int, Field(description="Target Y coordinate in pixels (absolute).")]
+) -> list:
     """Move mouse to absolute coordinates (x, y)."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -274,8 +314,14 @@ async def computer13_mouse_move(worker_id: str, x: int, y: int) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_mouse_click(worker_id: str, x: int | None = None, y: int | None = None, button: str = "left", num_clicks: int = 1) -> list:
-    """Click mouse with optional coordinates/button/click count."""
+async def computer13_mouse_click(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    x: Annotated[int | None, Field(description="Optional absolute X coordinate. Omit to click at current cursor.")] = None,
+    y: Annotated[int | None, Field(description="Optional absolute Y coordinate. Omit to click at current cursor.")] = None,
+    button: Annotated[Literal["left", "right", "middle"], Field(description="Mouse button to click.")] = "left",
+    num_clicks: Annotated[int, Field(description="Number of clicks to perform.", ge=1, le=3)] = 1
+) -> list:
+    """Click mouse at optional coordinates; supports left/right/middle and multi-click (1-3)."""
     ctrl = _ctrl(worker_id)
     params: dict[str, Any] = {"button": button}
     if num_clicks and num_clicks != 1:
@@ -290,8 +336,12 @@ async def computer13_mouse_click(worker_id: str, x: int | None = None, y: int | 
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_mouse_right_click(worker_id: str, x: int | None = None, y: int | None = None) -> list:
-    """Right-click optionally at (x, y)."""
+async def computer13_mouse_right_click(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    x: Annotated[int | None, Field(description="Optional absolute X coordinate.")] = None,
+    y: Annotated[int | None, Field(description="Optional absolute Y coordinate.")] = None
+) -> list:
+    """Right-click optionally at (x, y); defaults to current cursor if coordinates omitted."""
     ctrl = _ctrl(worker_id)
     params: dict[str, Any] = {}
     if x is not None and y is not None:
@@ -304,8 +354,12 @@ async def computer13_mouse_right_click(worker_id: str, x: int | None = None, y: 
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_mouse_double_click(worker_id: str, x: int | None = None, y: int | None = None) -> list:
-    """Double-click optionally at (x, y)."""
+async def computer13_mouse_double_click(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    x: Annotated[int | None, Field(description="Optional absolute X coordinate.")] = None,
+    y: Annotated[int | None, Field(description="Optional absolute Y coordinate.")] = None
+) -> list:
+    """Double-click optionally at (x, y); defaults to cursor position if not provided."""
     ctrl = _ctrl(worker_id)
     params: dict[str, Any] = {}
     if x is not None and y is not None:
@@ -318,7 +372,10 @@ async def computer13_mouse_double_click(worker_id: str, x: int | None = None, y:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_mouse_down(worker_id: str, button: str = "left") -> list:
+async def computer13_mouse_down(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    button: Annotated[Literal["left", "right", "middle"], Field(description="Mouse button to hold.")] = "left"
+) -> list:
     """Press and hold a mouse button (default: left)."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -328,7 +385,10 @@ async def computer13_mouse_down(worker_id: str, button: str = "left") -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_mouse_up(worker_id: str, button: str = "left") -> list:
+async def computer13_mouse_up(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    button: Annotated[Literal["left", "right", "middle"], Field(description="Mouse button to release.")] = "left"
+) -> list:
     """Release a mouse button (default: left)."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -338,7 +398,11 @@ async def computer13_mouse_up(worker_id: str, button: str = "left") -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_drag_to(worker_id: str, x: int, y: int) -> list:
+async def computer13_drag_to(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    x: Annotated[int, Field(description="Target X coordinate in pixels (absolute).")],
+    y: Annotated[int, Field(description="Target Y coordinate in pixels (absolute).")]
+) -> list:
     """Drag to absolute coordinates (x, y)."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -348,7 +412,11 @@ async def computer13_drag_to(worker_id: str, x: int, y: int) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_scroll(worker_id: str, dx: int = 0, dy: int = 0) -> list:
+async def computer13_scroll(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    dx: Annotated[int, Field(description="Horizontal scroll delta; positive=right, negative=left.")] = 0,
+    dy: Annotated[int, Field(description="Vertical scroll delta; positive=up, negative=down.")] = 0
+) -> list:
     """Scroll horizontally (dx) and/or vertically (dy)."""
     ctrl = _ctrl(worker_id)
     params: dict[str, int] = {}
@@ -365,7 +433,10 @@ async def computer13_scroll(worker_id: str, dx: int = 0, dy: int = 0) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_type_text(worker_id: str, text: str) -> list:
+async def computer13_type_text(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    text: Annotated[str, Field(description="Text to type into the focused element.", min_length=1)]
+) -> list:
     """Type a string into the focused element."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -375,7 +446,10 @@ async def computer13_type_text(worker_id: str, text: str) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_key_press(worker_id: str, key: str) -> list:
+async def computer13_key_press(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    key: Annotated[str, Field(description="Single key name (lowercase, must be in KEYBOARD_KEYS).", min_length=1)]
+) -> list:
     """Press a single key (e.g., 'enter')."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -385,7 +459,10 @@ async def computer13_key_press(worker_id: str, key: str) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_key_down(worker_id: str, key: str) -> list:
+async def computer13_key_down(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    key: Annotated[str, Field(description="Key name to hold (lowercase, must be in KEYBOARD_KEYS).", min_length=1)]
+) -> list:
     """Hold a key down."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -395,7 +472,10 @@ async def computer13_key_down(worker_id: str, key: str) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_key_up(worker_id: str, key: str) -> list:
+async def computer13_key_up(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    key: Annotated[str, Field(description="Key name to release (lowercase, must be in KEYBOARD_KEYS).", min_length=1)]
+) -> list:
     """Release a key."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -405,7 +485,10 @@ async def computer13_key_up(worker_id: str, key: str) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_hotkey(worker_id: str, keys: list[str]) -> list:
+async def computer13_hotkey(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    keys: Annotated[List[str], Field(description="Ordered list of keys for hotkey combo, e.g., ['ctrl','c'].", min_length=1)]
+) -> list:
     """Press a combination of keys (e.g., ['ctrl','c'])."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_action({
@@ -415,7 +498,10 @@ async def computer13_hotkey(worker_id: str, keys: list[str]) -> list:
 
 
 @ToolRegistry.register_tool("desktop_action_computer_13")
-async def computer13_wait(worker_id: str, seconds: float = 1.0) -> list:
+async def computer13_wait(
+    worker_id: Annotated[str, Field(description="Worker id/session key (auto-injected by HttpMCPEnv).")],
+    seconds: Annotated[float, Field(description="Seconds to pause before capturing observation.", gt=0, le=30.0)] = 1.0
+) -> list:
     """Wait for N seconds and capture the current screen and a11y tree."""
     ctrl = _ctrl(worker_id)
     return await _execute_and_capture(worker_id, lambda: ctrl.execute_python_command(f"import time; time.sleep({seconds})"))

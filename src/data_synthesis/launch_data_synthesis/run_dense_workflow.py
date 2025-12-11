@@ -14,8 +14,8 @@ DEPLOYMENT_CONFIG = "/home/a1/sdb/lb/Mytest/deployment_config_hybridrag_osworld.
 GATEWAY_CONFIG = "gateway_config_osworld_hybirdrag.json"
 
 # 路径配置
-SEEDS_FILE = "/home/a1/sdb/lb/Mytest/src/data_synthesis/example_seed_texts.json"
-OUTPUT_BASE = f"synthesis_results_simple_answer_{time.strftime('%Y%m%d_%H%M%S')}_test_seeds"
+SEEDS_FILE = "/home/a1/sdb/lb/Mytest/src/data_synthesis/example_seed_demo.json"
+OUTPUT_BASE = f"/home/a1/sdb/lb/Mytest/src/data_synthesis/results/synthesis__{time.strftime('%Y%m%d_%H%M%S')}_demo"
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
