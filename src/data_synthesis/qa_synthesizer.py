@@ -9,6 +9,7 @@ import json
 import os
 from typing import Optional
 from datetime import datetime
+import pdb
 
 from models import Trajectory, SynthesizedQA
 from synthesis_config import SynthesisConfig
@@ -45,9 +46,15 @@ class GenericQASynthesizer:
                 temperature=0.7,
                 response_format={"type": "json_object"}
             )
-            
             result = json.loads(response.choices[0].message.content)
-            
+
+            print("--------------------------------")
+            print(prompt)
+            print()
+            print(result)
+            print("--------------------------------")
+
+
             # 生成QA的唯一标识：source_id + trajectory编号 + qa编号
             qa_id = f"{trajectory.trajectory_id}_qa_{qa_index}"
             
@@ -69,8 +76,8 @@ class GenericQASynthesizer:
             
             print(f"  ✓ Successfully synthesized QA pair")
             print(f"    QA ID: {qa_id}")
-            print(f"    Question: {qa.question[:100]}...")
-            print(f"    Answer: {qa.answer[:100]}...")
+            print(f"    Question: {qa.question}...")
+            print(f"    Answer: {qa.answer}...")
             
             return qa
             
@@ -82,7 +89,7 @@ class GenericQASynthesizer:
         """Build QA synthesis prompt (dynamically generated based on configuration)"""
         
         # Generic prompt template
-        prompt = f"""You are a data synthesis expert. Based on the following Agent's exploration trajectory, synthesize a high-quality Q&A pair.
+        prompt = f"""You are a data synthesis expert. Based on the following Agent's exploration trajectory, synthesize a high-quality Q&A pair. You should follow the Data Synthesis Guidance as much as you can.
 
 【Starting Point Information】
 Content: {trajectory.seed_data}"""
@@ -117,9 +124,9 @@ Answer: {example.get('answer', '')}
 Please synthesize a high-quality Q&A pair based on the trajectory:
 
 ## Question Requirements (Crucial for Reasoning & Brevity):
-- **Multi-hop Factoid**: The question MUST require synthesizing information from multiple steps/documents to answer, BUT the target answer must be a specific fact (e.g., a name, a date, a location, a count, or a yes/no status).
-- **Avoid Explanations**: **DO NOT** ask "How", "Why", or "Describe" questions that require long textual explanations. Instead of "How did X affect Y?", ask "What was the specific percentage increase in Y caused by X?".
-- **De-contextualized**: The question should be understandable without seeing the trajectory (e.g., use "What represents the..." instead of "What did the agent find...").
+- The target answer must be a specific fact (e.g., a name, a date, a location, a count, or a yes/no status).
+- **DO NOT** ask "How", "Why", or "Describe" questions that require long textual explanations. 
+- The question should be understandable without seeing the trajectory (e.g., use "What represents the..." instead of "What did the agent find...").
 
 ## Answer Requirements (Crucial for Strict Length):
 - **Extreme Brevity**: The answer MUST be **less than or equal to one sentence**, or ideally just a **short phrase** (e.g., "1985", "The Treaty of Versailles", "Increased by 5%").
@@ -145,10 +152,6 @@ Return JSON EXACTLY in this schema (do not add extra fields):
     ...
   ]
 }}
-Rules for reasoning_steps:
-- Use 2-6 steps actually needed for the answer (no generic summaries).
-- Every step MUST include the tool name from the trajectory and a direct excerpt (<=200 chars) from the corresponding observation.
-- Keep descriptions brief; avoid meta commentary.
 """
         
         return prompt

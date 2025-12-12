@@ -171,7 +171,7 @@ class GenericTrajectorySampler:
                 print(f"     Intent: {intent}")
                 print(f"     Action: {action.get('tool_name', 'unknown')}")
                 # Safe slice for logging (now guaranteed to be string)
-                obs_preview = observation[:100] + "..." if len(observation) > 100 else observation
+                obs_preview = observation[:1000] + "..." if len(observation) > 1000 else observation
                 print(f"     Observation: {obs_preview}")
                 
                 self._expand_tree(child_id, seed_data)
@@ -276,7 +276,7 @@ Content: {seed_data}"""
 
 [Exploration Goal]
 Based on the starting point content and available tools, conduct systematic exploration to collect and reason about valuable information.
-
+Finally, I will synthesize a question and answer based on your collected information. Therefore, you should explore sufficient information for me.
 """
         
         if self.config.sampling_tips:
@@ -296,13 +296,13 @@ Available Tools:
 
 """
         
-        if self.config.qa_examples:
-            prompt += """Reference Examples:\n"""
-            for i, example in enumerate(self.config.qa_examples[:2], 1):
-                prompt += f"""Example {i}:
-Question: {example.get('question', '')}
-Answer: {example.get('answer', '')}
-"""
+#         if self.config.qa_examples:
+#             prompt += """Reference Examples:\n"""
+#             for i, example in enumerate(self.config.qa_examples[:2], 1):
+#                 prompt += f"""Example {i}:
+# Question: {example.get('question', '')}
+# Answer: {example.get('answer', '')}
+# """
         
         prompt += """
 Based on the current state and available tools, select an appropriate tool and parameters, and generate the next action and intent.
@@ -392,6 +392,6 @@ Format:
             
             # Ensure observation is treated as string for slicing
             obs_str = str(n.observation)
-            history_str += f"  Observation: {obs_str[:200]}...\n"
+            history_str += f"  Observation: {obs_str[:1000]}...\n"
         
         return history_str

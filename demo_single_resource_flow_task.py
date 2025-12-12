@@ -82,15 +82,49 @@ TASK_DATA = {
     },
     {
       "type": "execute",
+      "parameters": {
+        "command": "mkdir -p /home/user/Desktop && echo 'INIT LOG START' > /home/user/Desktop/init_steps.log",
+        "shell": True
+      }
+    },
+    {
+      "type": "execute",
       "parameters": {"command": "chmod +x setup.sh", "shell": True}
     },
     {
       "type": "execute",
-      "parameters": {"command": "bash ./setup.sh", "shell": True}
+      "parameters": {
+        "command": "if [ -f setup.sh ]; then echo 'STEP 1: setup.sh exists after download' >> /home/user/Desktop/init_steps.log; else echo 'STEP 1: setup.sh missing' >> /home/user/Desktop/init_steps.log; fi",
+        "shell": True
+      }
     },
     {
       "type": "execute",
-      "parameters": {"command": "export DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/bus'\nxdg-open /home/user/project", "shell": True}
+      "parameters": {
+        "command": "if [ -x setup.sh ]; then echo 'STEP 2: setup.sh is executable' >> /home/user/Desktop/init_steps.log; else echo 'STEP 2: setup.sh not executable' >> /home/user/Desktop/init_steps.log; fi",
+        "shell": True
+      }
+    },
+    {
+      "type": "execute",
+      "parameters": {
+        "command": "if bash ./setup.sh; then echo 'STEP 3: setup.sh executed successfully' >> /home/user/Desktop/init_steps.log; else echo 'STEP 3: setup.sh execution failed' >> /home/user/Desktop/init_steps.log; exit 1; fi",
+        "shell": True
+      }
+    },
+    {
+      "type": "execute",
+      "parameters": {
+        "command": "mkdir -p /home/user/Desktop && cp setup.sh /home/user/Desktop/setup.sh && echo 'STEP 4: artifacts copied to desktop' >> /home/user/Desktop/init_steps.log && echo '初始化完成，请在桌面确认 setup.sh 文件和 init_ready.txt' > /home/user/Desktop/init_ready.txt && ls -l setup.sh | tee -a /home/user/Desktop/init_steps.log",
+        "shell": True
+      }
+    },
+    {
+      "type": "execute",
+      "parameters": {
+        "command": "export DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/bus'\nxdg-open /home/user/project\n echo 'STEP 5: desktop open command issued' >> /home/user/Desktop/init_steps.log",
+        "shell": True
+      }
     }
   ]
 }
@@ -100,9 +134,9 @@ TASK_DATA = {
 # ==========================================
 
 class OSWorldPyAutoGUIRunner:
-    def __init__(self, server_url: str = "http://localhost:8080"):
+    def __init__(self, server_url: str = "http://localhost:8080", worker_id: str = "task_runner_prod_001"):
         self.server_url = server_url
-        self.worker_id = "task_runner_prod_001"
+        self.worker_id = worker_id
         self.mcp_client = MCPSSEClient(f"{server_url}/sse")
         self.initialized = False
         self.agent_tools = [] 
@@ -198,6 +232,18 @@ class OSWorldPyAutoGUIRunner:
         else:
             logger.warning(f"[{self.worker_id}] ⚠️ 结果验证未通过")
 
+    async def hold_desktop_for_observation(self, duration_seconds: int = 300):
+        """
+        Keep the desktop open to let operators verify the initialization state.
+        """
+        logger.info(f"[{self.worker_id}] ⏳ 保持桌面约 {duration_seconds}s 以观察初始化状态...")
+        hold_script = f"""import time
+print('Observation window started for {duration_seconds} seconds...')
+time.sleep({duration_seconds})
+print('Observation window ended.')
+"""
+        await self._execute_desktop_python_script(hold_script, description="initialization observation")
+
     async def _execute_shell_command(self, command):
         safe_command = command.replace("'", "\\'")
         python_wrapper = f"""
@@ -229,6 +275,42 @@ except Exception as e:
         except Exception as e:
             logger.error(f"命令执行失败: {e}")
             return f"Error: {e}"
+
+    async def _execute_desktop_python_script(self, script: str, description: str = "desktop python script"):
+        try:
+            result = await self.mcp_client.call_tool(
+                "desktop_execute_python_script",
+                {
+                    "worker_id": self.worker_id,
+                    "script": script
+                }
+            )
+            output = ""
+            if hasattr(result, 'content'):
+                for item in result.content:
+                    if item.type == 'text':
+                        output += item.text
+            log_output = self._sanitize_log_data(output)
+            logger.info(f"[{self.worker_id}] {description} 输出:\n{log_output}")
+            return output
+        except Exception as e:
+            logger.error(f"[{self.worker_id}] 执行 {description} 失败: {e}", exc_info=True)
+            return f"Error: {e}"
+
+    async def perform_visible_python_action(self):
+        logger.info(f"[{self.worker_id}] 🎬 执行第二次初始化的 Python 可视化动作...")
+        action_script = """from pathlib import Path
+from datetime import datetime
+
+desktop = Path.home() / "Desktop"
+desktop.mkdir(parents=True, exist_ok=True)
+marker = desktop / "second_init_python_action.txt"
+timestamp = datetime.now().isoformat()
+marker.write_text(f"✅ Second initialization Python action logged at {timestamp}\\n")
+print(f"Visible action file created at: {marker}")
+print(f"File contents: {marker.read_text().strip()}")
+"""
+        await self._execute_desktop_python_script(action_script, description="visible python action")
 
     async def release(self):
         if self.initialized:
@@ -307,25 +389,60 @@ except Exception as e:
         return f"{prefix}{text[:max_len]}... <total {len(text)} chars> ...{text[-20:]}"
 
 # ==========================================
-# 5. 主程序入口
+# 5. 初始化阶段执行器
+# ==========================================
+
+async def _run_initialization_phase(
+    server_url: str,
+    worker_id: str,
+    *,
+    hold_seconds: int = 0,
+    run_agent_task: bool = False,
+    action_cb=None
+):
+    runner = OSWorldPyAutoGUIRunner(server_url, worker_id=worker_id)
+    try:
+        logger.info(
+            f"[{worker_id}] 阶段启动 (hold_seconds={hold_seconds}, run_agent_task={run_agent_task})"
+        )
+        await runner.connect()
+        await runner.fetch_and_filter_tools()
+        await runner.setup_session()
+        if run_agent_task:
+            await runner.run_agent_task()
+        if hold_seconds:
+            await runner.hold_desktop_for_observation(duration_seconds=hold_seconds)
+        if action_cb:
+            await action_cb(runner)
+        logger.info(f"[{worker_id}] 阶段流程完成，准备释放资源以触发快速重置。")
+    finally:
+        await runner.release()
+
+
+# ==========================================
+# 6. 主程序入口
 # ==========================================
 
 async def main():
     server_url = os.environ.get("MCP_SERVER_URL", "http://localhost:8080")
-    runner = OSWorldPyAutoGUIRunner(server_url)
-    
     try:
-        await runner.connect()
-        await runner.fetch_and_filter_tools()
-        await runner.setup_session()
-        await runner.run_agent_task()
+        await _run_initialization_phase(
+            server_url,
+            worker_id="task_runner_init_observe",
+            hold_seconds=300
+        )
+
+        await _run_initialization_phase(
+            server_url,
+            worker_id="task_runner_action_demo",
+            run_agent_task=True,
+            action_cb=lambda runner: runner.perform_visible_python_action()
+        )
+        logger.info("两轮初始化与行为验证完成。")
 
     except BaseException as e:
         logger.error(f"运行时错误或用户中断: {repr(e)}")
-        
-    finally:
-        logger.info("进入清理流程...")
-        await runner.release()
+
 
 if __name__ == "__main__":
     try:

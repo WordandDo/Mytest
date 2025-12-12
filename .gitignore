@@ -161,3 +161,9 @@ src/data/
 src/index/
 
 .DS_Store
+
+# Sensitive env-specific config
+src/utils/osworld-settings/thunderbird/settings.json
+src/utils/osworld-settings/proxy/dataimpulse.json
+src/utils/osworld-settings/google/settings.json
+src/utils/osworld-settings/googledrive/settings.yml

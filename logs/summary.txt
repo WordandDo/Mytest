@@ -1,0 +1,8 @@
+工作总结：
+1. 分析 `/logs/resource_api_20251212_161921.log` 回滚失败，确认 ResetDisk 错误为快照与磁盘来源不一致，决定在 VM 池层捕获并记录“纯净快照”。
+2. 在 `src/utils/resource_pools/vm_pool.py` 添加 `snapshot_id` 字段，Aliyun 实例创建和重置时自动拍摄/刷新 clean snapshot，并在释放流程中优先使用。
+3. 增强快照等待逻辑：加入 600s 超时时间、RegionId 参数、单线程加锁以串行创建，避免并发请求导致阿里云限流；如果超时会记录失败并回退重建。
+4. 快照配置兼容多 provider：Aliyun 传递捕获的 snapshot_id，其它平台继续使用配置里提供的名称，Docker/VMware 不受影响。
+5. 发现创建快照期间 RAG 进程初始化占用 port 8001，可通过 `deployment_config_hybridrag_osworld.json` 中 `server_start_retries` 调整等待窗口，环境变量 `RESOURCE_MAX_OCCUPATION_TIME` 控制第三层超时。
+6. 日志 `resource_api_20251212_182058.log` 已确认 snapshot 创建成功，后续可以观察 `Fast rollback` 相关日志来验证恢复链路是否被激活。
+

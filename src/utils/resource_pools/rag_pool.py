@@ -26,6 +26,27 @@ from utils.rag_index_new import get_rag_index_class, BaseRAGIndex
 
 logger = logging.getLogger(__name__)
 
+LOG_DIR = os.path.join(cwd, "logs")
+RAG_PID_FILE = os.path.join(LOG_DIR, "rag_server.pid")
+
+def _write_rag_pid(pid: int):
+    """Persist the current RAG server PID for external tooling."""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(RAG_PID_FILE, "w", encoding="utf-8") as fh:
+            fh.write(str(pid))
+    except Exception as e:
+        logger.warning(f"Failed to write RAG PID file: {e}")
+
+def _remove_rag_pid_file():
+    """Helper to clear the persisted RAG pid when the service stops."""
+    try:
+        os.remove(RAG_PID_FILE)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"Failed to remove RAG PID file: {e}")
+
 # =========================================================================
 # [Embedded RAG Server] 嵌入式 RAG 服务端逻辑
 # =========================================================================
@@ -324,6 +345,7 @@ class RAGPoolImpl(AbstractPoolManager):
     def initialize_pool(self, max_workers: int = 10) -> bool:
         """启动 RAG 子进程"""
         logger.info(f"Initializing RAG Pool (Starting Subprocess on port {self.service_port})...")
+        _remove_rag_pid_file()
         
         # 1. 启动子进程
         self.server_process = multiprocessing.Process(
@@ -332,6 +354,8 @@ class RAGPoolImpl(AbstractPoolManager):
             daemon=True
         )
         self.server_process.start()
+        if self.server_process.pid:
+            _write_rag_pid(self.server_process.pid)
         
         # 2. 等待服务就绪 (简单的轮询检查)
         import requests
@@ -444,3 +468,4 @@ class RAGPoolImpl(AbstractPoolManager):
         
         # 额外清理：确保端口被释放
         kill_port_process(self.service_port)
+        _remove_rag_pid_file()
