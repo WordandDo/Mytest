@@ -87,8 +87,6 @@ class HttpMCPEnv:
         self.initial_observation = None
         self.allocated_resources = {}
         self._tools_initialized = False
-        # 顺序编号：用于为工具产生的图片生成连续的 <obs_i> token
-        self._obs_counter = 0
 
         # 5. 工具白名单（优先策略）
         # 优先使用传入的 tool_whitelist；否则尝试从环境变量 MCP_TOOL_WHITELIST 读取（逗号分隔）
@@ -256,40 +254,8 @@ class HttpMCPEnv:
                     "text": f"Accessibility Tree:\n{initial_obs['accessibility_tree']}"
                 })
 
-        # [新增] 注入任务输入图片（如由子类设置的 self.input_images）
-        # 支持两种形式：
-        # - base64 数据：{"b64": "..."}
-        # - 远程 URL：{"url": "https://..."}
-        # 若同时存在，则都注入，便于模型预览与工具调用（例如反向图搜需要 URL）
-        # 注意：图片标记使用成对标签，例如 <image_1> ... </image_1>
-        input_images = getattr(self, "input_images", None)
-        if isinstance(input_images, list) and input_images:
-            for idx, img in enumerate(input_images, start=1):
-                open_token = f"<image_{idx}>"
-                close_token = f"</image_{idx}>"
-                if isinstance(img, dict):
-                    b64 = img.get("b64")
-                    url = img.get("url")
-                    # 始终先输出纯 Token 行，确保匹配提取逻辑 (<token> 必须是文本项最后)
-                    user_content.append({"type": "text", "text": open_token})
-                    if b64:
-                        user_content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{b64}",
-                                "detail": "high"
-                            }
-                        })
-                    elif url:
-                        user_content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": url,
-                                "detail": "high"
-                            }
-                        })
-                    # 结尾关闭 Token（供可读性；裁切索引不依赖该行）
-                    user_content.append({"type": "text", "text": close_token})
+        # 钩子：由子类决定是否以及如何注入任务输入图片
+        self._append_input_images(user_content)
 
         messages.append({"role": "user", "content": user_content})
 
@@ -354,25 +320,9 @@ class HttpMCPEnv:
                             })
 
                             if image_list:
-                                # 将工具返回的图片统一包裹为 <obs_i> ... </obs_i>
-                                obs_blocks = []
-                                for img_b64 in image_list:
-                                    self._obs_counter += 1
-                                    open_obs = f"<obs_{self._obs_counter}>"
-                                    close_obs = f"</obs_{self._obs_counter}>"
-                                    # 开标签
-                                    obs_blocks.append({"type": "text", "text": open_obs})
-                                    # 图片
-                                    obs_blocks.append({
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/png;base64,{img_b64}",
-                                            "detail": "high"
-                                        }
-                                    })
-                                    # 闭标签（可读性）
-                                    obs_blocks.append({"type": "text", "text": close_obs})
-                                messages.append({"role": "user", "content": obs_blocks})
+                                image_msgs = self._build_tool_image_message(image_list)
+                                if image_msgs:
+                                    messages.extend(image_msgs)
 
                     else:
                         # 减少日志：最终答案产生时不再输出
@@ -478,6 +428,53 @@ class HttpMCPEnv:
                 )
         return self._openai_client
 
+    def _build_tool_image_message(self, image_list: List[str]) -> List[Dict[str, Any]]:
+        """
+        将工具返回的图片转换为消息块。
+        基类仅简单注入图片，不添加特殊 Token，子类可覆盖添加自定义标记。
+        """
+        blocks = []
+        for img_b64 in image_list:
+            blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
+                    "detail": "high"
+                }
+            })
+        return [{"role": "user", "content": blocks}] if blocks else []
+
+    def _append_input_images(self, user_content: List[Dict[str, Any]]) -> None:
+        """
+        钩子：注入任务输入图片。基类默认不做额外打标。
+        子类可覆盖以添加特殊 Token 或自定义结构。
+        """
+        input_images = getattr(self, "input_images", None)
+        if not isinstance(input_images, list) or not input_images:
+            return
+
+        for img in input_images:
+            if not isinstance(img, dict):
+                continue
+            b64 = img.get("b64")
+            url = img.get("url")
+            if b64:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{b64}",
+                        "detail": "high"
+                    }
+                })
+            elif url:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": url,
+                        "detail": "high"
+                    }
+                })
+
     # =========================================================================
     # 工具管理与执行 (适配 MCP)
     # =========================================================================
@@ -538,7 +535,7 @@ class HttpMCPEnv:
 
     def _initialize_tools(self):
         """从 MCP Server 获取工具列表并进行本地适配"""
-        if not self._tools_initialized:
+        if self._tools_initialized:
             return
 
         try:
@@ -586,6 +583,7 @@ class HttpMCPEnv:
 
             descriptions = [f"- {t.name}: {t.description or 'No description.'}" for t in valid_tools]
             self.tool_descriptions = "\n".join(descriptions)
+            self._tools_initialized = True
 
             # 减少日志：移除工具数量日志
             # logger.info(f"[{self.worker_id}] {len(valid_tools)} tools initialized")
@@ -808,10 +806,10 @@ class HttpMCPEnv:
 
         try:
             if not self.active_resources:
-                 logger.info(f"[{self.worker_id}] Running in stateless mode (no heavy resources required). Initializing tools only.")
-                 # 即使没有需要分配的资源，也调用获取观察值，因为可能有无状态工具可用
-                 self.get_inital_obs()
-                 return True
+                logger.info(f"[{self.worker_id}] Running in stateless mode (no heavy resources required). Initializing tools only.")
+                # 即使没有需要分配的资源，也调用获取观察值，因为可能有无状态工具可用
+                self.fetch_initial_observations()
+                return True
 
             # 1. 申请资源
             # 减少日志：移除批量资源分配详细日志

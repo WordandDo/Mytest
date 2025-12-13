@@ -126,7 +126,7 @@ Please synthesize a high-quality Q&A pair based on the trajectory:
 ## Question Requirements (Crucial for Reasoning & Brevity):
 - The target answer must be a specific fact (e.g., a name, a date, a location, a count, or a yes/no status).
 - **DO NOT** ask "How", "Why", or "Describe" questions that require long textual explanations. 
-- The question should be understandable without seeing the trajectory (e.g., use "What represents the..." instead of "What did the agent find...").
+- The question should be understandable without seeing the trajectory and observation as a natural, factual, and self-contained question (e.g., don't include "What did the agent find...", "what is in the trajectory...", "according to the trajectory...", ...).
 
 ## Answer Requirements (Crucial for Strict Length):
 - **Extreme Brevity**: The answer MUST be **less than or equal to one sentence**, or ideally just a **short phrase** (e.g., "1985", "The Treaty of Versailles", "Increased by 5%").
@@ -139,7 +139,7 @@ Please synthesize a high-quality Q&A pair based on the trajectory:
 
 Return JSON EXACTLY in this schema (do not add extra fields):
 {{
-  "question": "question text (multi-hop but targeting a specific fact)",
+  "question": "question text",
   "answer": "short phrase or single sentence",
   "reasoning_steps": [
     {{

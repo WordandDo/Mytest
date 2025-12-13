@@ -52,6 +52,37 @@ class TextSearchService:
             
             # Directly return search results (title + url) without fetching page contents or LLM summarization
             return search_results
+
+    async def visit_url(self,
+                        url: str,
+                        region: Optional[str] = None,
+                        lang: Optional[str] = None) -> str:
+        """
+        Visit a specific URL by running a SerpAPI lookup for that page and returning a condensed text summary.
+        """
+        if not url:
+            raise ValueError("URL is required for web visiting.")
+        if not self.config.SERPAPI_API_KEY:
+            raise ValueError("SERPAPI_API_KEY is required for web visiting.")
+
+        async with aiohttp.ClientSession() as session:
+            results = await self._get_search_results(session, url, 1, region, lang)
+
+        entry = results[0] if results else {}
+        parts = []
+        if url:
+            parts.append(f"URL: {url}")
+        title = entry.get("title")
+        if title:
+            parts.append(f"Title: {title}")
+        snippet = entry.get("snippet")
+        if snippet:
+            parts.append(snippet)
+        source = entry.get("source")
+        if source:
+            parts.append(f"Source: {source}")
+
+        return "\n\n".join(parts).strip()
     
     def _validate_api_keys(self):
         """Validate that required API keys are available"""
@@ -105,13 +136,40 @@ class TextSearchService:
         organic_results = data.get("organic_results", [])
         candidates = []
         
-        for item in organic_results:
+        for idx, item in enumerate(organic_results, start=1):
             url = item.get("link")
             title = item.get("title", "")
-            
+            snippet = item.get("snippet") or item.get("description") or ""
+            source = item.get("source") or item.get("displayed_link") or item.get("displayed_url") or ""
+            date = item.get("date") or ""
+
+            image_url = (
+                item.get("imageUrl") or item.get("image_url") or item.get("image") or ""
+            )
+            thumbnail_url = (
+                item.get("thumbnailUrl") or item.get("thumbnail") or item.get("thumbnail_url") or ""
+            )
+
             if url:
-                candidates.append({"title": title, "url": url})
-            
+                result = {
+                    "title": title,
+                    "url": url,
+                    "link": url,  # serper/serpapi naming alias
+                    "snippet": snippet,
+                    "position": item.get("position") or idx,
+                }
+                if source:
+                    result["source"] = source
+                if date:
+                    result["date"] = date
+                if image_url:
+                    result["image_url"] = image_url
+                    result["imageUrl"] = image_url
+                if thumbnail_url:
+                    result["thumbnail_url"] = thumbnail_url
+                    result["thumbnailUrl"] = thumbnail_url
+                candidates.append(result)
+
             if len(candidates) >= k:
                 break
         

@@ -1,9 +1,15 @@
 # src/envs/http_mcp_search_env.py
+import asyncio
 import logging
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from .http_mcp_env import HttpMCPEnv
 import os
 import base64
+import json
+
+from utils.search_v2.config.settings import Config
+from utils.search_v2.cloud_storage import CloudStorageService
 
 logger = logging.getLogger(__name__)
 
@@ -11,12 +17,12 @@ SYSTEM_PROMPT_SEARCH = """You are a capable Search & Analysis Agent.
 Your goal is to gather information, analyze content, and process visual data using the provided tools.
 
 ## Capabilities
-1. **Web Search**: Use `web_search` to find up-to-date information, news, and technical documentation.
+1. **Web Search**: Use `web_search` to find up-to-date information, news, and technical documentation. Use `web_visit` to fetch a specific URL’s snippet/summary.
 2. **Visual Analysis**: 
    - Use `reverse_image_search` to find the source or similar images of a given URL.
-   - Use `crop_images_by_token` to focus on specific regions of an image referenced in the conversation history.
+   - Use `crop_images_by_token` to focus on specific regions of an image referenced in the conversation history. Cropped outputs may appear as <obs_i> images when available.
 3. **Image by Text**:
-   - Use `image_search_by_text` to find images related to a text query.
+   - Use `image_search_by_text` to find images related to a text query. Results may include thumbnails injected as <obs_i>.
 
 ## Tool Usage Strategy
 1. **Search Broadly, Then Narrow Down**: Start with broad keywords, then refine based on initial results.
@@ -31,8 +37,8 @@ Your goal is to gather information, analyze content, and process visual data usi
 
 ## Image Token Policy
 - Input images from the task are wrapped as paired tokens: <image_1> ... </image_1>, <image_2> ... </image_2>, etc.
-- Images produced by tools (e.g., search results thumbnails) are wrapped in order as <obs_i> ... </obs_i> and can be cropped by referencing obs_i.
-- Cropped images must NOT be cropped again; they are not re-injected with tokens.
+- Images produced by tools (e.g., search results thumbnails or cropped outputs) are wrapped in order as <obs_i> ... </obs_i> and can be referenced or cropped by obs_i.
+- Cropped images must NOT be cropped again; they are not re-injected with new tokens.
 - Prefer reusing already tokenized images (<image_k> / <obs_i>) for reverse-image or cropping steps.
 """
 
@@ -58,6 +64,7 @@ class HttpMCPSearchEnv(HttpMCPEnv):
         if not kwargs.get("tool_whitelist"):
             kwargs["tool_whitelist"] = [
                 "web_search",
+                "web_visit",
                 "reverse_image_search",
                 "crop_images_by_token",
                 "image_search_by_text",
@@ -69,6 +76,11 @@ class HttpMCPSearchEnv(HttpMCPEnv):
             parallel_degree=parallel_degree,
             **kwargs
         )
+
+        # 专用于搜索场景的图片标记计数器（用于生成 <obs_i> 标签）
+        self._obs_counter = 0
+        self._cloud_storage: Optional[CloudStorageService] = None
+        self._storage_mode = Config.STORAGE_MODE
 
         # [关键兼容性设置]
         # Search V2 (utility) 是无状态服务，不需要向 Resource Manager 申请锁定/分配。
@@ -99,6 +111,136 @@ class HttpMCPSearchEnv(HttpMCPEnv):
             prompt += f"\n\n## Current Task\n{task_question}"
 
         return prompt
+
+    def _build_tool_image_message(self, image_list: List[str]) -> List[Dict[str, Any]]:
+        """
+        搜索环境专用：为工具产出的图片添加 <obs_i> ... </obs_i> 标记，便于裁剪/引用。
+        兼容 base64 与 HTTP/HTTPS URL 的缩略图。
+        """
+        obs_blocks: List[Dict[str, Any]] = []
+        for img in image_list:
+            self._obs_counter += 1
+            open_obs = f"<obs_{self._obs_counter}>"
+            close_obs = f"</obs_{self._obs_counter}>"
+            obs_blocks.append({"type": "text", "text": open_obs})
+            if isinstance(img, str) and img.startswith(("http://", "https://")):
+                img_payload = {"url": img, "detail": "low"}
+            else:
+                img_payload = {"url": f"data:image/png;base64,{img}", "detail": "high"}
+            obs_blocks.append({
+                "type": "image_url",
+                "image_url": img_payload
+            })
+            obs_blocks.append({"type": "text", "text": close_obs})
+        return [{"role": "user", "content": obs_blocks}] if obs_blocks else []
+
+    def _call_tool_sync(self, name: str, arguments: Any):
+        """
+        仅在搜索环境中：对搜索工具和裁切工具额外抽取图片 URL/base64 作为 <obs_i> 注入。
+        """
+        result = super()._call_tool_sync(name, arguments)
+
+        if not isinstance(result, dict):
+            return result
+
+        images = list(result.get("images", [])) if isinstance(result.get("images", []), list) else []
+        text_payload = result.get("text") or ""
+
+        def _extract_from_list(items: List[Dict[str, Any]]):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                thumb = item.get("thumbnailUrl") or item.get("thumbnail")
+                if thumb:
+                    images.append(thumb)
+                    continue
+                img = item.get("imageUrl") or item.get("image_url")
+                if img:
+                    images.append(img)
+
+        if name in {"web_search", "image_search_by_text", "reverse_image_search"} and text_payload:
+            try:
+                parsed = json.loads(text_payload)
+                items = parsed if isinstance(parsed, list) else []
+                _extract_from_list(items)
+            except Exception:
+                pass
+
+        if name == "crop_images_by_token" and text_payload:
+            try:
+                parsed = json.loads(text_payload)
+                if isinstance(parsed, dict):
+                    img_list = parsed.get("images", [])
+                    if isinstance(img_list, list):
+                        images.extend([img for img in img_list if isinstance(img, str)])
+            except Exception:
+                pass
+
+        dedup = []
+        seen = set()
+        for img in images:
+            if img and img not in seen:
+                seen.add(img)
+                dedup.append(img)
+            if len(dedup) >= 5:
+                break
+        result["images"] = dedup
+        return result
+
+    def _append_input_images(self, user_content: List[Dict[str, Any]]) -> None:
+        """
+        搜索环境：为任务输入图片添加 <image_k> ... </image_k> 标记，便于后续引用/裁剪。
+        """
+        input_images = getattr(self, "input_images", None)
+        if not isinstance(input_images, list) or not input_images:
+            return
+
+        for idx, img in enumerate(input_images, start=1):
+            if not isinstance(img, dict):
+                continue
+            open_token = f"<image_{idx}>"
+            close_token = f"</image_{idx}>"
+            b64 = img.get("b64")
+            url = img.get("url")
+            user_content.append({"type": "text", "text": open_token})
+            if b64:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{b64}",
+                        "detail": "high"
+                    }
+                })
+            elif url:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": url,
+                        "detail": "high"
+                    }
+                })
+            user_content.append({"type": "text", "text": close_token})
+
+    def _upload_local_image_to_cloud(self, file_path: str) -> Optional[str]:
+        """Upload a local image to cloud storage when storage_mode=cloud."""
+        try:
+            if self._cloud_storage is None:
+                self._cloud_storage = CloudStorageService()
+
+            loop = self._loop
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._loop = loop
+
+            result = loop.run_until_complete(
+                self._cloud_storage.upload_single_image(Path(file_path))
+            )
+            if isinstance(result, dict):
+                return result.get("url")
+        except Exception as e:
+            logger.warning(f"[{self.worker_id}] Upload input image failed: {e}")
+        return None
 
     def _load_gateway_config(self, config_path: str) -> Dict[str, Any]:
         """
@@ -155,6 +297,13 @@ class HttpMCPSearchEnv(HttpMCPEnv):
                     self.input_images.append({"url": s})
                     continue
                 if os.path.exists(s):
+                    # cloud 模式：先上传到云存储并使用 URL 注入
+                    if self._storage_mode == "cloud":
+                        url = self._upload_local_image_to_cloud(s)
+                        if url:
+                            self.input_images.append({"url": url})
+                            continue
+                    # 回退方案：直接注入 base64
                     try:
                         with open(s, 'rb') as f:
                             b64 = base64.b64encode(f.read()).decode('utf-8')

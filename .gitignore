@@ -167,3 +167,5 @@ src/utils/osworld-settings/thunderbird/settings.json
 src/utils/osworld-settings/proxy/dataimpulse.json
 src/utils/osworld-settings/google/settings.json
 src/utils/osworld-settings/googledrive/settings.yml
+src/utils/osworld-settings/googledrive/client_secrets.json
+src/utils/osworld-settings/googledrive/credentials.json

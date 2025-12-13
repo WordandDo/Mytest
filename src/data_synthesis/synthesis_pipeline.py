@@ -13,13 +13,14 @@ import os
 import bdb
 import hashlib
 import time
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Union
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 仅导入基础 Environment 类
-from envs import Environment
+from envs.http_mcp_env import HttpMCPEnv
+from envs.http_mcp_rag_env import HttpMCPRagEnv
+from envs.http_mcp_search_env import HttpMCPSearchEnv
 from models import TrajectoryNode, Trajectory, SynthesizedQA
 from synthesis_config import SynthesisConfig
 from trajectory_sampler import GenericTrajectorySampler
@@ -96,35 +97,25 @@ class GenericDataSynthesis:
         # 3. 稍微等待工具列表同步
         time.sleep(2) 
     
-    def _create_environment(self) -> Environment:
-        """根据配置创建相应的环境 (按需导入)"""
+    def _create_environment(self) -> Union[HttpMCPEnv, HttpMCPRagEnv, HttpMCPSearchEnv]:
+        """根据配置创建相应的环境 (MCP 统一基类)"""
         mode = self.config.environment_mode.lower()
         kwargs = self.config.environment_kwargs.copy()
         kwargs['model_name'] = self.config.model_name
-        
-        if mode == "web":
-            from envs import WebEnvironment
-            return WebEnvironment(**kwargs)
-        elif mode == "math":
-            from envs import MathEnvironment
-            return MathEnvironment(**kwargs)
-        elif mode == "python" or mode == "py":
-            from envs import PythonEnvironment
-            return PythonEnvironment(**kwargs)
-        elif mode == "rag":
-            if 'rag_index' not in kwargs:
-                pass 
-            from envs import RAGEnvironment
-            return RAGEnvironment(**kwargs)
-        elif mode == "osworld" or mode == "gui":
-            required_params = ['path_to_vm']
-            missing = [p for p in required_params if p not in kwargs]
-            if missing:
-                raise ValueError(f"OSWorld环境需要提供以下参数: {', '.join(missing)}")
-            from envs import OSWorldEnvironment
-            return OSWorldEnvironment(**kwargs)
-        else:
-            raise ValueError(f"不支持的环境模式: {mode}")
+
+        # 1. RAG 专用环境
+        if mode == "rag":
+            return HttpMCPRagEnv(**kwargs)
+
+        # 2. Search 专用环境
+        if mode == "search":
+            return HttpMCPSearchEnv(**kwargs)
+
+        # 3. 通用 MCP 环境 (兼容 math/python/web/osworld/gui)
+        if mode in ["mcp", "http_mcp", "math", "python", "py", "web", "osworld", "gui"]:
+            return HttpMCPEnv(**kwargs)
+
+        raise ValueError(f"不支持的环境模式: {mode} (未映射到 MCP 环境)")
     
     def _initialize_output_files(self):
         """初始化输出文件路径并创建输出目录"""

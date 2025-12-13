@@ -158,17 +158,35 @@ class Benchmark(ABC):
     
     def load_data(self, data_path: str):
         """
-        Load benchmark data from a file.
+        Load benchmark data from a file or directory.
         
         Args:
-            data_path: Path to the data file (JSON or JSONL)
+            data_path: Path to the data file (JSON/JSONL) or a directory containing them.
         """
         self.data_path = data_path
+        # always start fresh before loading new data
+        self.items = []
         
         if not os.path.exists(data_path):
             raise FileNotFoundError(f"Data file not found: {data_path}")
         
-        # Determine file format
+        # Directory mode: load all json/jsonl files inside
+        if os.path.isdir(data_path):
+            files = sorted(
+                [p for p in os.listdir(data_path) if p.endswith(".jsonl") or p.endswith(".json")]
+            )
+            if not files:
+                raise ValueError(f"No .json or .jsonl files found in directory: {data_path}")
+            for fname in files:
+                fpath = os.path.join(data_path, fname)
+                if fpath.endswith(".jsonl"):
+                    self._load_jsonl(fpath)
+                elif fpath.endswith(".json"):
+                    self._load_json(fpath)
+            print(f"Loaded {len(self.items)} items from directory {data_path} ({len(files)} files)")
+            return
+        
+        # File mode
         if data_path.endswith('.jsonl'):
             self._load_jsonl(data_path)
         elif data_path.endswith('.json'):
@@ -180,7 +198,6 @@ class Benchmark(ABC):
     
     def _load_jsonl(self, file_path: str):
         """Load data from JSONL file."""
-        self.items = []
         with open(file_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
@@ -198,8 +215,6 @@ class Benchmark(ABC):
         """Load data from JSON file."""
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
-        self.items = []
         
         # Handle different JSON structures
         if isinstance(data, list):
@@ -359,7 +374,7 @@ class Benchmark(ABC):
             resolved.append(chosen if chosen is not None else p)
 
         return resolved if is_list_input else resolved[0]
-    
+
     def get_item(self, item_id: str) -> Optional[BenchmarkItem]:
         """Get a specific item by ID."""
         for item in self.items:
@@ -378,7 +393,7 @@ class Benchmark(ABC):
     def get_answers(self) -> List[str]:
         """Get all ground truth answers."""
         return [item.answer for item in self.items]
-    
+
     def evaluate(self, 
                  predictions: Union[Dict[str, str], List[str]], 
                  metric: str = "exact_match",
@@ -391,6 +406,8 @@ class Benchmark(ABC):
         Args:
             predictions: Dict mapping item_id to prediction, or list of predictions in order
             metric: Evaluation metric to use
+            concurrent: Evaluate in parallel when True
+            max_workers: Optional override for thread pool size
             **kwargs: Additional arguments for the metric function
             
         Returns:
@@ -398,8 +415,10 @@ class Benchmark(ABC):
         """
         if isinstance(predictions, list):
             if len(predictions) != len(self.items):
-                raise ValueError(f"Number of predictions ({len(predictions)}) "
-                               f"doesn't match number of items ({len(self.items)})")
+                raise ValueError(
+                    f"Number of predictions ({len(predictions)}) "
+                    f"doesn't match number of items ({len(self.items)})"
+                )
             pred_dict = {item.id: pred for item, pred in zip(self.items, predictions)}
         else:
             pred_dict = predictions
@@ -408,12 +427,20 @@ class Benchmark(ABC):
         for missing_id in missing_ids:
             print(f"Warning: No prediction for item {missing_id}")
 
-        items_to_evaluate = [(index, item) for index, item in enumerate(self.items) if item.id in pred_dict]
+        items_to_evaluate = [
+            (index, item) for index, item in enumerate(self.items) if item.id in pred_dict
+        ]
 
         def evaluate_single(index_item_pair):
             index, item = index_item_pair
             prediction = pred_dict[item.id]
-            score = self._compute_metric(item.answer, prediction, metric, question=item.question, **kwargs)
+            score = self._compute_metric(
+                item.answer,
+                prediction,
+                metric,
+                question=item.question,
+                **kwargs,
+            )
             result = EvaluationResult(
                 item_id=item.id,
                 question=item.question,
@@ -421,7 +448,9 @@ class Benchmark(ABC):
                 prediction=prediction,
                 score=score,
                 metric_name=metric,
-                details=self._get_metric_details(item.answer, prediction, metric, **kwargs)
+                details=self._get_metric_details(
+                    item.answer, prediction, metric, **kwargs
+                ),
             )
             return index, result
 
@@ -710,6 +739,40 @@ Did the model give an answer equivalent to the labeled answer? Please respond wi
             self.evaluation_results.append(result)
         
         print(f"Evaluation results loaded from {file_path}")
+
+# Helper: quick Science dataset check
+def _load_science_dataset_summary(science_dir: str) -> Dict[str, Any]:
+    import glob
+    science_jsons = sorted(glob.glob(os.path.join(science_dir, "*.json")))
+    summary = {
+        "science_dir": science_dir,
+        "found_files": len(science_jsons),
+        "loaded_files": 0,
+        "total_images": 0,
+        "images_found": 0,
+    }
+
+    for jf in science_jsons:
+        try:
+            benchmark = create_benchmark(data_path=jf, name="Science Loader Check")
+        except Exception:
+            continue
+
+        if not benchmark.items:
+            continue
+        item = benchmark.items[0]
+        imgs = (item.metadata or {}).get("images", [])
+        if isinstance(imgs, str):
+            imgs = [imgs]
+        exists = [os.path.exists(p) for p in imgs]
+
+        summary["loaded_files"] += 1
+        summary["total_images"] += len(imgs)
+        summary["images_found"] += sum(1 for x in exists if x)
+
+    return summary
+
+
 
 
 # Convenience functions for common use cases

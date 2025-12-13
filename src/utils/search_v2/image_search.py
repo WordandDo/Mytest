@@ -215,21 +215,45 @@ class ImageSearchService:
     
     def _extract_search_result(self, item: dict) -> Dict[str, str]:
         """Extract and normalize search result from API response"""
-        return {
-            "title": item.get("title") or item.get("source") or "No Title",
-            "thumbnail": (
-                item.get("thumbnail") or 
-                item.get("thumbnail_url") or 
-                item.get("original") or 
-                ""
-            ),
-            "link": (
-                item.get("link") or 
-                item.get("source") or 
-                item.get("image") or 
-                ""
-            ),
+        title = item.get("title") or item.get("source") or "No Title"
+        thumbnail = (
+            item.get("thumbnail") or 
+            item.get("thumbnail_url") or 
+            item.get("thumbnailUrl") or 
+            ""
+        )
+        image_url = (
+            item.get("original") or
+            item.get("image") or
+            item.get("image_url") or
+            item.get("imageUrl") or
+            ""
+        )
+        source = item.get("source") or item.get("domain") or ""
+        link = (
+            item.get("link") or 
+            item.get("source") or 
+            item.get("image") or 
+            ""
+        )
+
+        result = {
+            "title": title,
+            "thumbnail": thumbnail,          # backward compat
+            "thumbnailUrl": thumbnail,
+            "link": link,
+            "url": link,  # alias for downstream web_visit
         }
+        if image_url:
+            result["image_url"] = image_url  # backward compat
+            result["imageUrl"] = image_url
+        if source:
+            result["source"] = source
+        if item.get("domain"):
+            result["domain"] = item.get("domain")
+        if item.get("position"):
+            result["position"] = item.get("position")
+        return result
     
     def _deduplicate_results(self, results: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Remove duplicate results based on link"""

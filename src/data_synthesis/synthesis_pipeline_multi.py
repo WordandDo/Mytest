@@ -33,13 +33,6 @@ from trajectory_selector import GenericTrajectorySelector
 from qa_synthesizer import GenericQASynthesizer
 from task_synthesizer import OSWorldTaskSynthesizer
 
-# 引入环境基类 (直接从文件导入以避免懒加载导致的类型问题)
-try:
-    from envs.enviroment import Environment
-except ImportError:
-    # 如果直接导入失败，尝试从包导入
-    from envs import Environment  # type: ignore
-
 # 引入 MCP 环境类 (直接从文件导入，避开 envs/__init__.py 中可能存在的错误引用)
 try:
     from envs.http_mcp_env import HttpMCPEnv

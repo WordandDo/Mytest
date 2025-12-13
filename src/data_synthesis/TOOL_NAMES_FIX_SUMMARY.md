@@ -300,7 +300,7 @@ for tool_name in env.list_tools():
 ## 参考资源
 
 - **工具定义**：`/home/a1/sdb/tzw/AgentFlow/src/tools/osworld_tools.py`
-- **环境基类**：`/home/a1/sdb/tzw/AgentFlow/src/envs/enviroment.py`
+- **环境基类**：`/home/a1/sdb/lb/Mytest/src/envs/http_mcp_env.py`
 - **OSWorld环境**：`/home/a1/sdb/tzw/AgentFlow/src/envs/osworld_environment.py`
 - **配置示例**：`/home/a1/sdb/tzw/AgentFlow/src/data_synthesis/configs/osworld_*_config.json`
 
@@ -309,4 +309,3 @@ for tool_name in env.list_tools():
 **修复时间**: 2025-11-10  
 **修复内容**: 工具名称映射错误  
 **影响范围**: 所有使用 OSWorld 环境的数据合成配置
-

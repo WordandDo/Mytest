@@ -4,6 +4,8 @@ Type: Standalone/Stateless Pattern
 """
 import os
 import json
+import base64
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Annotated
 from pydantic import Field
 from mcp_server.core.registry import ToolRegistry
@@ -63,10 +65,13 @@ def get_image_processor():
 async def web_search(
     query: Annotated[str, Field(description="Search keywords or question text.", min_length=1)],
     k: Annotated[int, Field(description="Number of results to return; keep small to reduce noise.", ge=1, le=20)] = 5,
-    region: Annotated[str, Field(description="Lowercase region/country code such as 'cn' or 'us'.", pattern="^[a-z]{2}$")] = "cn",
+    region: Annotated[str, Field(description="Lowercase region/country code such as 'cn' or 'us'.", pattern="^[a-z]{2}$")] = "us",
 ) -> str:
     """
     Web search with summaries (stateless).
+    Return shape (JSON string): List of items with
+    - title, url (and link alias), snippet, source?, position?, date?
+    - image_url/imageUrl?, thumbnail_url/thumbnailUrl?
     Format hints:
     - query: plain text (no URLs needed unless part of the question)
     - k: small integers (1-20) to control list length
@@ -85,12 +90,34 @@ async def web_search(
         return json.dumps({"status": "error", "tool": "web_search", "message": str(e)}, ensure_ascii=False)
 
 @ToolRegistry.register_tool("search_tools")
+async def web_visit(
+    url: Annotated[str, Field(description="Webpage URL (often taken from another search result).", min_length=1)],
+    region: Annotated[str, Field(description="Lowercase region/country code such as 'cn' or 'us'.", pattern="^[a-z]{2}$")] = "us",
+) -> str:
+    """
+    Visit a specific webpage by URL and return SerpAPI’s snippet/metadata for that page.
+    """
+    service = get_text_service()
+    if not service:
+        return "Error: TextSearchService not available (check dependencies/config)."
+    try:
+        text_summary = await service.visit_url(url=url, region=region)
+        return json.dumps({"text": text_summary}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] web_visit failed: {e}\n{traceback.format_exc()}")
+        return json.dumps({"status": "error", "tool": "web_visit", "message": str(e)}, ensure_ascii=False)
+
+@ToolRegistry.register_tool("search_tools")
 async def image_search_by_text(
     query: Annotated[str, Field(description="Text query describing the target image (e.g., 'AIRFold logo').", min_length=1)],
     k: Annotated[int, Field(description="Number of image results to return.", ge=1, le=20)] = 5,
 ) -> str:
     """
     Search images by text and return URLs (thumbnail/full).
+    Return shape (JSON string): List of items with
+    - title, link
+    - thumbnail/thumbnailUrl, image_url/imageUrl?, source?, domain?, position?
     Keep k small (1-20). Provide concise, visual-friendly keywords.
     """
     service = get_image_service()
@@ -113,6 +140,9 @@ async def reverse_image_search(
 ) -> str:
     """
     Reverse image search using a referenced image token from the chat.
+    Return shape (JSON string): List of items with
+    - title, link
+    - thumbnail/thumbnailUrl, image_url/imageUrl?, source?, domain?, position?
     Notes:
     - image_token must match a token already present in messages (<image_x> or <obs_x>).
     - messages is normally auto-injected by the client; callers usually omit it.
@@ -183,6 +213,11 @@ async def crop_images_by_token(
 ) -> str:
     """
     Crop regions from images referenced by tokens in the conversation history.
+    Return shape (JSON string):
+    {
+      "results": {"token": "<local path or url or error>", ...},
+      "images": [<base64 or url>...]  # storage_mode=local -> base64; storage_mode=cloud -> url
+    }
     Requirements:
     - Each crop box must be four integers: [left, top, right, bottom].
     - tokens must match existing <image_x> or <obs_x> entries.
@@ -202,11 +237,32 @@ async def crop_images_by_token(
 
         # 注意：messages 参数依赖于 Gateway/Client 端的注入机制
         # 如果未注入，工具会尝试仅处理 content (如果被错误传入) 或报错
-        results = await service.batch_crop_images(
+        results: Dict[str, str] = await service.batch_crop_images(
             crop_config=formatted_config,
             messages=messages
         )
-        return json.dumps(results, ensure_ascii=False, indent=2)
+        images: List[str] = []
+        storage_mode = getattr(service.config, "STORAGE_MODE", "cloud")
+
+        for _, val in results.items():
+            if not isinstance(val, str):
+                continue
+            # cloud: URL 直接返回
+            if storage_mode == "cloud" and val.startswith(("http://", "https://")):
+                images.append(val)
+            # local: 读取文件为 base64
+            elif storage_mode == "local":
+                path = Path(val)
+                if path.exists():
+                    try:
+                        with open(path, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode("utf-8")
+                            images.append(b64)
+                    except Exception as _:
+                        pass
+
+        payload = {"results": results, "images": images}
+        return json.dumps(payload, ensure_ascii=False, indent=2)
     except Exception as e:
         import traceback
         print(f"[ERROR] crop_images_by_token failed: {e}\n{traceback.format_exc()}")

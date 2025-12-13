@@ -16,7 +16,7 @@ from synthesis_config import SynthesisConfig
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from envs import Environment
+from envs.http_mcp_env import HttpMCPEnv
 
 
 class GenericTrajectorySampler:
@@ -25,7 +25,7 @@ class GenericTrajectorySampler:
     """
     
     def __init__(self, 
-                 environment: Environment,
+                 environment: HttpMCPEnv,
                  config: SynthesisConfig):
         """
         Initialize Generic Trajectory Sampler

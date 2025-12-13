@@ -6,11 +6,10 @@ This module provides a factory pattern for creating environments,
 eliminating hard-coded if-elif chains in AgentRunner.
 """
 
-from typing import Type, Dict, Optional, Any, Union
-from .enviroment import Environment
+from typing import Dict, Any
 
 # Environment registry - maps mode names to environment classes
-# [修改] 类型提示放宽为 Any，以支持解耦后的 HttpMCPEnv
+# 类型提示放宽为 Any，以支持解耦后的 HttpMCPEnv
 _ENVIRONMENT_REGISTRY: Dict[str, Any] = {}
 
 

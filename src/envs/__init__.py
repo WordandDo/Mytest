@@ -15,8 +15,12 @@ def __getattr__(name):
     
     # 1. 基础环境
     if name == "Environment":
-        from .enviroment import Environment
+        # 兼容旧引用，直接映射到当前唯一的 MCP 环境基类
+        from .http_mcp_env import HttpMCPEnv as Environment
         return Environment
+    elif name == "HttpMCPEnv":
+        from .http_mcp_env import HttpMCPEnv
+        return HttpMCPEnv
     elif name == "Tool":
         from tools.tool import Tool
         return Tool
@@ -81,8 +85,9 @@ __all__ = [
     "Observation",
     "TrajectoryStep",
     "TaskTrajectory",
-    # Base classes
+    # Base classes (Environment is kept as alias to HttpMCPEnv for compatibility)
     "Environment",
+    "HttpMCPEnv",
     "Tool",
     # Environments (lazy loaded)
     "MathEnvironment",
