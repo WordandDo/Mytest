@@ -132,7 +132,7 @@ Please synthesize a high-quality Q&A pair based on the trajectory:
 ## Answer Requirements (Crucial for Strict Length):
 - **Extreme Brevity**: The answer MUST be **less than or equal to one sentence, and contain only one entity**, or ideally just a **short phrase** (e.g., "1985", "The Treaty of Versailles", "Increased by 5%").
 - **No Fluff**: Do not use filler words like "According to the documents..." or "The answer is...". Provide ONLY the final answer value.
-- **Groundedness**: The specific fact must be strictly derived from the provided trajectory observations.
+- **Groundedness**: The specific fact must be strictly derived from the provided trajectory observations without mentioning the trajectory or observation.
 
 ## Reasoning Steps Requirements:
 - Clearly show the logical deduction process (Chain-of-Thought) that links the multiple steps to the single final fact.
