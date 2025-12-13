@@ -488,6 +488,18 @@ class HttpMCPEnv:
                 pass
         return self._call_tool_sync(tool_name, params)
 
+    async def execute_tool_async(self, tool_name: str, params: Union[str, dict], **kwargs) -> Union[str, Dict[str, Any]]:
+        """
+        异步执行工具：直接代理到 MCP（用于异步采样/并发工具调用场景）。
+        注意：必须在与本实例 `self._loop` 绑定的同一事件循环中运行。
+        """
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except Exception:
+                pass
+        return await self._call_tool_async(tool_name, params)
+
     def get_tool_schemas(self) -> List[ChatCompletionToolParam]:
         return self.tool_schemas  # type: ignore
 
@@ -765,6 +777,88 @@ class HttpMCPEnv:
                 pass
         except Exception:
             pass
+        return output
+
+    async def _call_tool_async(self, name: str, arguments: Union[Dict[str, Any], str]):
+        """
+        异步调用 MCP 工具（与 `_call_tool_sync` 语义对齐）。
+        """
+        # 确保参数是字典格式
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON arguments for tool {name}: {arguments}")
+                raise ValueError(f"Invalid JSON arguments for tool {name}")
+
+        # 自动注入 worker_id（如果缺失）
+        if isinstance(arguments, dict) and "worker_id" not in arguments:
+            arguments["worker_id"] = self.worker_id
+
+        # 记录调用日志（截断长参数）
+        try:
+            if isinstance(arguments, dict):
+                safe_args = dict(arguments)
+                if "messages" in safe_args:
+                    msgs = safe_args["messages"]
+                    safe_args["messages"] = f"[len={len(msgs)}]"
+            else:
+                safe_args = arguments
+            logger.info(f"[{self.worker_id}] 🔧 (async) Tool call -> {name} args={safe_args}")
+        except Exception:
+            pass
+
+        # 发起异步工具调用
+        try:
+            res: CallToolResult = await self.mcp_client.call_tool(name, arguments if isinstance(arguments, dict) else {})
+        except Exception as e:
+            logger.error(f"[{self.worker_id}] ❌ (async) Tool call failed -> {name}: {e}")
+            return {"text": json.dumps({"status": "error", "tool": name, "message": str(e)}, ensure_ascii=False), "images": []}
+
+        # 特殊处理资源管理类工具（直接返回原始结果）
+        resource_management_tools = {
+            "allocate_batch_resources", "setup_batch_resources",
+            "get_batch_initial_observations", "teardown_environment",
+            "release_batch_resources"
+        }
+        if name in resource_management_tools:
+            return res
+
+        # 标准化输出格式（文本+图像）
+        output = {
+            "text": "",
+            "images": []
+        }
+
+        texts = []
+        if hasattr(res, 'content') and res.content:
+            for item in res.content:
+                if item.type == 'text':
+                    texts.append(item.text)
+                elif item.type == 'image':
+                    image_data = item.data
+                    if ',' in image_data:
+                        image_data = image_data.split(',', 1)[1]
+                    output["images"].append(image_data)
+        else:
+            texts.append(str(res) if res else "Success")
+
+        output_text = "\n".join(texts)
+        output["text"] = output_text
+
+        # 记录返回摘要（截断）
+        try:
+            preview = output_text[:200].replace("\n", " ") if output_text else ""
+            logger.info(f"[{self.worker_id}] ✅ (async) Tool result <- {name} text='{preview}' images={len(output['images'])}")
+            try:
+                data = json.loads(output_text)
+                if isinstance(data, dict) and data.get("status") == "error":
+                    logger.error(f"[{self.worker_id}] ❗ (async) Tool error <- {name}: {data.get('message')}")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         return output
 
     def _parse_mcp_response(self, response: CallToolResult) -> Dict[str, Any]:

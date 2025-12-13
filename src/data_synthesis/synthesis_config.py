@@ -50,6 +50,16 @@ class SynthesisConfig:
     
     # 其他配置
     max_retries: int = 3
+
+    # =========================================================================
+    # 异步/并发采样配置（默认关闭，保证兼容）
+    # =========================================================================
+    # 是否启用异步探索树展开（对 I/O 密集：LLM/检索/网页 等通常显著加速）
+    async_tree: bool = False
+    # LLM 并发度上限（建议结合 API 限流调整）
+    async_llm_concurrency: int = 8
+    # 工具调用并发度上限（OSWorld/GUI 等强状态环境建议保持 1；检索/搜索可适当增大）
+    async_tool_concurrency: int = 1
     
     # 并行处理配置
     max_workers: int = 1  # 并行处理的worker数量，1表示串行处理
@@ -95,6 +105,9 @@ class SynthesisConfig:
             "min_depth": self.min_depth,
             "max_selected_traj": self.max_selected_traj,
             "max_retries": self.max_retries,
+            "async_tree": self.async_tree,
+            "async_llm_concurrency": self.async_llm_concurrency,
+            "async_tool_concurrency": self.async_tool_concurrency,
             "max_workers": self.max_workers,
             "number_of_seed": self.number_of_seed
         }
@@ -133,6 +146,12 @@ class SynthesisConfig:
         
         if self.min_depth > self.max_depth:
             errors.append("min_depth不能大于max_depth")
+
+        if self.async_llm_concurrency < 1:
+            errors.append("async_llm_concurrency必须大于0")
+
+        if self.async_tool_concurrency < 1:
+            errors.append("async_tool_concurrency必须大于0")
         
         return errors
 

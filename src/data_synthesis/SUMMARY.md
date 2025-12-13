@@ -366,6 +366,22 @@ python synthesis_pipeline.py \
 }
 ```
 
+### 4. 单 Seed 内异步探索（进一步加速）
+
+如果你的瓶颈主要在 **LLM/检索/网页访问** 等 I/O 上，可以开启“单 seed 内异步探索树展开”来提升吞吐（与 `max_workers` 的多进程并行互补）。
+
+```json
+{
+  "async_tree": true,
+  "async_llm_concurrency": 8,
+  "async_tool_concurrency": 1
+}
+```
+
+实用建议：
+- 若你同时使用多进程并行（`max_workers > 1`），请注意总并发量会叠加，避免触发 API 限流。
+- 强状态工具/环境（如 GUI/OSWorld）通常不适合并发工具调用，建议保持 `async_tool_concurrency: 1`。
+
 ---
 
 ## 🐛 故障排查

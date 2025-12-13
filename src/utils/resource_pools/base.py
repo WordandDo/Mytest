@@ -137,13 +137,10 @@ class AbstractPoolManager(ABC):
                         # A. 触发修复
                         self._reset_resource(entry)
 
-                        # B. 冷却机制，避免忙轮询
-                        logger.warning(f"Resource {resource_id} invalid. Cooling down 5s before requeue...")
-                        time.sleep(5.0)
-
-                        # C. 自动归还队列
+                        # B. 直接归还队列并让上层处理退避，避免在锁内阻塞
+                        logger.warning(f"Resource {resource_id} invalid/not ready. Returning None for retry.")
                         self.free_queue.put(resource_id)
-                        continue
+                        return None
 
                     entry.status = ResourceStatus.OCCUPIED
                     entry.allocated_to = worker_id

@@ -140,22 +140,33 @@ class GenericResourceManager:
                 if all_available:
                     # 所有资源都有空闲实例，开始分配
                     allocated_batch = {}
+                    allocation_failed = False
+                    failed_resource_type = None
                     try:
                         # 依次分配每种资源
                         for r_type in req_types:
                             pool = self.pools[r_type]
                             res = pool.allocate(worker_id, timeout=0.01) 
                             if not res:
-                                raise RuntimeError(f"Unexpected allocation failure for {r_type}")
+                                allocation_failed = True
+                                failed_resource_type = r_type
+                                logger.warning(f"⚠️ [AtomicAlloc] Worker={worker_id} failed to allocate {r_type} (resource invalid/busy). Triggering retry...")
+                                break
                             allocated_batch[r_type] = res
                             
-                        # 记录分配的资源ID并跟踪实例
-                        res_ids = [r['id'] for r in allocated_batch.values()]
-                        for r_type, res in allocated_batch.items():
-                            self.tracker.record_instance_task(res['id'], worker_id)
-                        
-                        logger.info(f"✅ [AtomicAlloc] Worker={worker_id} Acquired: {res_ids}")
-                        return allocated_batch
+                        if not allocation_failed:
+                            # 记录分配的资源ID并跟踪实例
+                            res_ids = [r['id'] for r in allocated_batch.values()]
+                            for r_type, res in allocated_batch.items():
+                                self.tracker.record_instance_task(res['id'], worker_id)
+                            
+                            logger.info(f"✅ [AtomicAlloc] Worker={worker_id} Acquired: {res_ids}")
+                            return allocated_batch
+                        else:
+                            # 部分分配失败，回滚已获取的资源
+                            for r_type, res in allocated_batch.items():
+                                self.pools[r_type].release(res['id'], worker_id, reset=False)
+                            unavailable_resource = failed_resource_type or unavailable_resource
                         
                     except Exception as e:
                         # 分配过程中出现异常，回滚已分配的资源

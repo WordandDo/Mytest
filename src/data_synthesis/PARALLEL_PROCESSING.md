@@ -25,6 +25,36 @@
   - 建议值: 2-8，取决于你的CPU核心数和API限制
   - 过高的值可能导致API限流或内存占用过大
 
+## 单个 Seed 内异步探索（async_tree）
+
+除了“多进程并行多个 seeds”（`max_workers`）之外，本项目还支持**在单个 seed 的探索树展开过程中做异步并发**，从而进一步加速 **I/O 密集** 的步骤（LLM 调用、检索/网页访问、远程工具调用等）。
+
+### 何时值得开启
+
+- **适合**：Web / RAG / Search 这类主要瓶颈是网络与模型响应的场景
+- **谨慎**：强状态/强副作用工具（如 GUI/OSWorld）——建议把 `async_tool_concurrency` 保持为 1（只并发 LLM 规划，不并发工具）
+
+### 配置示例
+
+在任意配置文件中加入以下字段即可开启：
+
+```json
+{
+  "async_tree": true,
+  "async_llm_concurrency": 8,
+  "async_tool_concurrency": 1
+}
+```
+
+### 并发度如何和 max_workers 一起调
+
+- **总 LLM 并发量近似**：`max_workers * async_llm_concurrency`
+- 如果你已经把 `max_workers` 开得很大，再开启 `async_tree` 容易触发 429/限流；建议从小值开始逐步增大。
+
+### 兼容性说明
+
+- 若环境未提供异步工具接口（`execute_tool_async`/`_run_sync`），采样器会**自动回退到同步展开**，不影响功能正确性。
+
 ## 使用方法
 
 ### 方法 1: 使用并行启动脚本
