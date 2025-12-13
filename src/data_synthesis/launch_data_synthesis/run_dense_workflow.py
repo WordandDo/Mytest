@@ -3,8 +3,15 @@ import sys
 import os
 import time
 import socket
-import psutil  # 用于杀进程，如果没有安装，脚本有fallback
+import traceback
 from pathlib import Path
+from contextlib import redirect_stdout, redirect_stderr
+
+# 优先使用第三方 multiprocess（若存在），否则回退到标准库 multiprocessing
+try:
+    from multiprocess import Process  # type: ignore
+except Exception:  # pragma: no cover
+    from multiprocessing import Process
 
 # ================= 配置区域 =================
 PYTHON_EXE = sys.executable
@@ -13,11 +20,15 @@ GATEWAY_PORT = 8080
 DEPLOYMENT_CONFIG = "/home/a1/sdb/lb/Mytest/deployment_config_hybridrag_osworld.json"
 GATEWAY_CONFIG = "gateway_config_osworld_hybirdrag.json"
 
+# 推导仓库根目录与 data_synthesis 目录（用于在多进程里安全 import pipeline 模块）
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DATA_SYNTHESIS_DIR = REPO_ROOT / "src" / "data_synthesis"
+
 # 路径配置
 SEEDS_FILE = "/home/a1/sdb/lb/Mytest/src/data_synthesis/example_seed_demo.json"
 OUTPUT_BASE = f"/home/a1/sdb/lb/Mytest/src/data_synthesis/results/synthesis__{time.strftime('%Y%m%d_%H%M%S')}_demo"
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR = REPO_ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # 任务定义：仅 Dense 模式
 TASKS = [
@@ -52,6 +63,13 @@ def wait_for_port(port, name, timeout=60):
 
 def kill_process_on_port(port):
     """杀掉占用指定端口的进程 (类似 lsof -ti:port | xargs kill -9)"""
+    # psutil 不是强依赖：缺失时直接跳过端口清理（由调用方决定是否安装）
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        print("⚠️  psutil 未安装，跳过 kill_process_on_port() 端口清理（建议安装 psutil 以启用清理能力）")
+        return
+
     found = False
     for proc in psutil.process_iter(['pid', 'name', 'connections']):
         try:
@@ -121,34 +139,93 @@ def start_gateway(config_file):
         return None
 
 def run_synthesis(task):
-    """运行数据合成 Pipeline (Multi)"""
+    """运行数据合成 Pipeline (Multi) - 子进程入口（不使用 subprocess 并行）"""
     mode = task["mode"]
     config_path = task["synthesis_config"]
     tool_whitelist = task.get("tool_whitelist", [])
-    print(f"🧠 >>> Starting Synthesis Pipeline (Multi): [{mode}] <<<")
-    
-    cmd = [
-        PYTHON_EXE, 
-        "src/data_synthesis/synthesis_pipeline_multi.py",
-        "--config", config_path,
-        "--seeds", SEEDS_FILE,
-        "--output-dir", os.path.join(OUTPUT_BASE, mode)
-    ]
 
-    # 基于模式收敛客户端暴露的工具，确保仅检索 + 会话初始化
-    env = os.environ.copy()
-    env["DEPLOYMENT_CONFIG_PATH"] = DEPLOYMENT_CONFIG
-    env["MCP_TOOL_WHITELIST"] = ",".join(
-        t for t in tool_whitelist
-    )
-    
-    log_path = LOG_DIR / f"synthesis_{mode}.log"
+    # 让子进程的 import 行为与直接执行 src/data_synthesis/synthesis_pipeline_multi.py 一致
+    if str(DATA_SYNTHESIS_DIR) not in sys.path:
+        sys.path.insert(0, str(DATA_SYNTHESIS_DIR))
+
+    # 统一在 repo root 下运行，避免相对路径歧义
     try:
-        log_file = open(log_path, "w")
-        return subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
-    except Exception as exc:
-        print(f"❌ Failed to start synthesis for [{mode}]: {exc}")
-        return None
+        os.chdir(str(REPO_ROOT))
+    except Exception:
+        # 非致命：如果 chdir 失败，就沿用当前 cwd
+        pass
+
+    output_dir = os.path.join(OUTPUT_BASE, mode)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 基于模式收敛客户端暴露的工具，确保仅检索 + 会话初始化（每个 mode 子进程独立设置）
+    os.environ["DEPLOYMENT_CONFIG_PATH"] = DEPLOYMENT_CONFIG
+    os.environ["MCP_TOOL_WHITELIST"] = ",".join(t for t in tool_whitelist)
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
+    # 路径归一：允许 task 配置使用相对路径
+    config_abspath = config_path
+    if not os.path.isabs(config_abspath):
+        config_abspath = str((REPO_ROOT / config_abspath).resolve())
+
+    seeds_abspath = SEEDS_FILE
+    if not os.path.isabs(seeds_abspath):
+        seeds_abspath = str((REPO_ROOT / seeds_abspath).resolve())
+
+    log_path = LOG_DIR / f"synthesis_{mode}.log"
+    exit_code = 0
+
+    try:
+        with open(log_path, "w", encoding="utf-8") as log_file, redirect_stdout(log_file), redirect_stderr(log_file):
+            try:
+                print(f"🧠 >>> Starting Synthesis Pipeline (Multi): [{mode}] <<<", flush=True)
+                print(f"  - config     : {config_abspath}", flush=True)
+                print(f"  - seeds      : {seeds_abspath}", flush=True)
+                print(f"  - output-dir : {output_dir}", flush=True)
+                print(f"  - whitelist  : {os.environ.get('MCP_TOOL_WHITELIST', '')}", flush=True)
+
+                import json
+                from synthesis_config import SynthesisConfig
+                from synthesis_pipeline_multi import GenericDataSynthesis
+
+                # 加载配置
+                if config_abspath.endswith(".json"):
+                    config = SynthesisConfig.from_json(config_abspath)
+                elif config_abspath.endswith(".yaml") or config_abspath.endswith(".yml"):
+                    config = SynthesisConfig.from_yaml(config_abspath)
+                else:
+                    raise ValueError("配置文件必须是 .json 或 .yaml 格式")
+
+                # 加载 seeds
+                with open(seeds_abspath, "r", encoding="utf-8") as f:
+                    seeds = json.load(f)
+
+                # 兼容单个字符串输入
+                if isinstance(seeds, str):
+                    seeds = [seeds]
+                if not isinstance(seeds, list):
+                    raise ValueError("Seed文件格式错误")
+
+                synthesizer = GenericDataSynthesis(config=config, output_dir=output_dir)
+                synthesizer.run(seeds)
+                synthesizer.save_results()
+
+            except SystemExit as e:
+                # 兼容 pipeline 内部 sys.exit
+                try:
+                    exit_code = int(e.code) if e.code is not None else 0
+                except Exception:
+                    exit_code = 1
+            except Exception:
+                traceback.print_exc()
+                exit_code = 1
+    except Exception:
+        # 如果连日志文件都打不开，就退回到 stderr
+        traceback.print_exc()
+        exit_code = 1
+
+    # 用退出码让主进程汇总结果（与原 subprocess.wait() 语义一致）
+    raise SystemExit(exit_code)
 
 def main():
     # 0. 检查必要的库
@@ -158,6 +235,12 @@ def main():
         print("⚠️  Installing missing dependency: psutil")
         subprocess.run([PYTHON_EXE, "-m", "pip", "install", "psutil"], check=True)
         import psutil
+
+    # 统一从仓库根目录运行，确保相对路径（src/...、gateway_config...）可用
+    try:
+        os.chdir(str(REPO_ROOT))
+    except Exception:
+        pass
 
     # 1. 准备后端
     # 同时向子进程注入部署配置，确保资源侧使用 hybridrag osworld 配置
@@ -182,15 +265,16 @@ def main():
             print(f"🌊 Processing Workflow (Dense): {mode.upper()}")
             print(f"{'='*60}")
 
-            proc = run_synthesis(task)
-            if proc:
-                processes.append((mode, proc))
-            else:
-                print(f"❌ Failed to launch process for {mode}")
+            # 使用多进程并行启动每个 mode 的 pipeline（不使用 subprocess.POpen）
+            proc = Process(target=run_synthesis, args=(task,), name=f"synthesis-{mode}")
+            proc.daemon = False  # 允许子进程再起 worker 进程（pipeline 内部本身会多进程）
+            proc.start()
+            processes.append((mode, proc))
 
         # 4. 等待任务结束
         for mode, proc in processes:
-            ret = proc.wait()
+            proc.join()
+            ret = proc.exitcode if proc.exitcode is not None else 1
             if ret == 0:
                 print(f"✅ Synthesis for [{mode}] completed.")
             else:
@@ -205,8 +289,11 @@ def main():
     except KeyboardInterrupt:
         print("\n⛔ Interrupted, terminating child processes...")
         for _, proc in processes:
-            if proc.poll() is None:
-                proc.terminate()
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+            except Exception:
+                continue
     finally:
         # 脚本退出时的清理
         print("\n🧹 Final Cleanup...")

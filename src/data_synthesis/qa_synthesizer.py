@@ -41,7 +41,8 @@ class GenericQASynthesizer:
         
         try:
             response = self.client.chat.completions.create(
-                model=self.config.model_name,
+                # model=self.config.model_name,
+                model='deepseek/deepseek-v3.2',
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
                 response_format={"type": "json_object"}

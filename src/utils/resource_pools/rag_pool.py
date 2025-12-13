@@ -10,6 +10,7 @@ import uvicorn
 import traceback
 import signal
 import subprocess
+from queue import Queue
 from typing import Dict, Any, Type, Optional
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
@@ -341,6 +342,11 @@ class RAGPoolImpl(AbstractPoolManager):
         self.service_url = f"http://localhost:{self.service_port}"
         self.server_process: Optional[multiprocessing.Process] = None
         self.rag_config = kwargs  # 保存配置传给子进程
+        self.is_recovering = False
+        self.recovery_lock = threading.Lock()
+        # 自动重启 RAG 服务会导致卡死，默认关闭
+        self.enable_restart = False
+        self._restart_notice_logged = False
 
     def initialize_pool(self, max_workers: int = 10) -> bool:
         """启动 RAG 子进程"""
@@ -400,6 +406,11 @@ class RAGPoolImpl(AbstractPoolManager):
              self.stop_all()
              return False
 
+        # 快速路径：只重启后端，不重新创建逻辑资源
+        if max_workers == 0:
+            self._reset_queue_after_restart()
+            return True
+
         # 3. 初始化逻辑资源槽位 (只有真正成功才会执行到这里)
         return super().initialize_pool(max_workers)
 
@@ -420,13 +431,16 @@ class RAGPoolImpl(AbstractPoolManager):
         1. 子进程必须存活
         2. 索引必须加载完成（health check 返回 ready=True）
         """
+        if self.is_recovering:
+            return False
+
         if not (self.server_process and self.server_process.is_alive()):
             return False
 
         # 检查索引是否就绪
         try:
             import requests
-            resp = requests.get(f"{self.service_url}/health", timeout=2)
+            resp = requests.get(f"{self.service_url}/health", timeout=1)
             if resp.status_code == 200:
                 data = resp.json()
                 return data.get("ready", False)  # 只有 ready=True 才算有效
@@ -435,6 +449,24 @@ class RAGPoolImpl(AbstractPoolManager):
             return False
 
         return False
+
+    def _reset_queue_after_restart(self) -> None:
+        """重启后恢复资源队列和状态。"""
+        with self.pool_lock:
+            new_queue: Queue = Queue()
+            free_count = 0
+            for entry in self.pool.values():
+                entry.status = ResourceStatus.FREE
+                entry.allocated_to = None
+                entry.allocated_at = None
+                entry.error_message = None
+                new_queue.put(entry.resource_id)
+                free_count += 1
+
+            self.free_queue = new_queue
+            self.stats["free"] = free_count
+            self.stats["occupied"] = 0
+            self.stats["total"] = len(self.pool)
 
     def _get_connection_info(self, entry: ResourceEntry) -> Dict[str, Any]:
         """返回直连信息给 MCP Server"""
@@ -447,10 +479,56 @@ class RAGPoolImpl(AbstractPoolManager):
         }
 
     def _reset_resource(self, entry: ResourceEntry) -> None:
-        pass
+        if self.is_recovering:
+            return
+
+        # 如果资源仍然健康，则无需重启
+        if self._validate_resource(entry):
+            return
+
+        if not self.enable_restart:
+            if not self._restart_notice_logged:
+                logger.warning("RAG restart logic is disabled to avoid system hangs. Please restart the service manually if needed.")
+                self._restart_notice_logged = True
+            return
+
+        # 非阻塞获取锁，避免重复触发
+        if not self.recovery_lock.acquire(blocking=False):
+            return
+
+        try:
+            if self.is_recovering:
+                return
+
+            logger.warning(f"🚨 RAG Backend failure detected by {entry.resource_id}. Triggering ASYNC RESTART...")
+            self.is_recovering = True
+
+            restart_thread = threading.Thread(
+                target=self._background_restart_task,
+                daemon=True,
+                name="RAG-Restart-Thread",
+            )
+            restart_thread.start()
+        finally:
+            self.recovery_lock.release()
 
     def _stop_resource(self, entry: ResourceEntry) -> None:
         pass
+
+    def _background_restart_task(self):
+        logger.info("🔧 [Background] RAG Restart sequence initiated (This will take a while)...")
+        try:
+            self.stop_all()
+            success = self.initialize_pool(max_workers=0)
+
+            if success:
+                logger.info("✅ [Background] RAG Server restarted and READY.")
+            else:
+                logger.error("❌ [Background] RAG Server restart failed.")
+        except Exception as e:
+            logger.error(f"❌ [Background] Restart exception: {e}", exc_info=True)
+        finally:
+            self.is_recovering = False
 
     def stop_all(self) -> None:
         """停止所有资源时，杀掉子进程"""
@@ -469,3 +547,4 @@ class RAGPoolImpl(AbstractPoolManager):
         # 额外清理：确保端口被释放
         kill_port_process(self.service_port)
         _remove_rag_pid_file()
+        self.is_recovering = False

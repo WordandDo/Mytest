@@ -7,6 +7,7 @@ Responsible for sampling trajectory tree starting from seed entity
 import openai
 import json
 import os
+import pdb
 import bdb
 import re
 from typing import Dict, List, Any, Optional, Tuple
@@ -231,6 +232,8 @@ class GenericTrajectorySampler:
                 # [关键修复] 清洗并解析 JSON
                 cleaned_content = self._clean_json_string(content)
                 result = json.loads(cleaned_content)
+
+                # print(result)
                 
                 # [关键修复] 处理返回列表的情况 (修复 'list' object has no attribute 'get')
                 if isinstance(result, list):
@@ -242,7 +245,11 @@ class GenericTrajectorySampler:
                 
                 intent = result.get("intent", "")
                 action = result.get("action", {})
-                
+
+                # print(intent)
+                # print(action)
+                # print(self.available_tools)
+
                 if self._validate_action(action):
                     return action, intent
                 
@@ -346,8 +353,37 @@ Format:
             if param.get('required', False):
                 if param['name'] not in parameters:
                     return False
+
+        # Normalize parameter types (e.g., numeric strings -> int) to be more tolerant of LLM output
+        normalized_params = self._normalize_parameters(tool_def, parameters)
+        action["parameters"] = normalized_params
         
         return True
+
+    def _normalize_parameters(self, tool_def: Dict[str, Any], parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize common parameter types to increase robustness against LLM format issues.
+        Example: convert numeric strings to int/float when the tool expects a number.
+        """
+        normalized = dict(parameters)
+
+        for param in tool_def.get("parameters", []):
+            name = param.get("name")
+            expected_type = param.get("type")
+            if name is None or name not in normalized:
+                continue
+
+            value = normalized[name]
+
+            # Convert numeric strings to int/float
+            if isinstance(value, str) and expected_type in ("integer", "number"):
+                try:
+                    normalized[name] = int(value) if expected_type == "integer" else float(value)
+                except ValueError:
+                    # If conversion fails, leave original value
+                    pass
+
+        return normalized
     
     def _execute_action(self, action: Dict[str, Any]) -> str:
         """Execute action and return observation (Always returns String)"""

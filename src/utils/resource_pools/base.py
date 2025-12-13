@@ -119,44 +119,53 @@ class AbstractPoolManager(ABC):
         return success_count == self.num_items
 
     def allocate(self, worker_id: str, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                try:
-                    resource_id = self.free_queue.get(timeout=1.0)
-                    with self.pool_lock:
-                        entry = self.pool.get(resource_id)
-                        if not entry: continue
-                        if entry.status != ResourceStatus.FREE: continue
-                        
-                        if not self._validate_resource(entry):
-                            logger.warning(f"Resource {resource_id} invalid during allocation.")
-                            entry.status = ResourceStatus.ERROR
-                            self.stats["free"] -= 1
-                            self.stats["error"] += 1
-                            continue
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                # 1. 获取资源
+                resource_id = self.free_queue.get(timeout=1.0)
 
-                        entry.status = ResourceStatus.OCCUPIED
-                        entry.allocated_to = worker_id
-                        entry.allocated_at = time.time()
-                        
-                        self.stats["free"] -= 1
-                        self.stats["occupied"] += 1
-                        self.stats["allocations"] += 1
+                with self.pool_lock:
+                    entry = self.pool.get(resource_id)
+                    if not entry:
+                        continue
+                    if entry.status != ResourceStatus.FREE:
+                        continue
 
-                        result = self._get_connection_info(entry)
-                        if "id" not in result:
-                            result["id"] = resource_id
-                            
-                        # [修改] 增强日志：显示当前资源池剩余情况
-                        logger.info(f"✅ Allocated {resource_id} to {worker_id} (Pool Free: {self.stats['free']}/{self.num_items})")
-                        return result
+                    # 2. 验证资源
+                    if not self._validate_resource(entry):
+                        # A. 触发修复
+                        self._reset_resource(entry)
 
-                except Empty:
-                    continue
-                except Exception as exc:
-                    logger.error(f"Error allocating resource: {exc}", exc_info=True)
-                    continue
-            return None
+                        # B. 冷却机制，避免忙轮询
+                        logger.warning(f"Resource {resource_id} invalid. Cooling down 5s before requeue...")
+                        time.sleep(5.0)
+
+                        # C. 自动归还队列
+                        self.free_queue.put(resource_id)
+                        continue
+
+                    entry.status = ResourceStatus.OCCUPIED
+                    entry.allocated_to = worker_id
+                    entry.allocated_at = time.time()
+
+                    self.stats["free"] -= 1
+                    self.stats["occupied"] += 1
+                    self.stats["allocations"] += 1
+
+                    result = self._get_connection_info(entry)
+                    if "id" not in result:
+                        result["id"] = resource_id
+
+                    logger.info(f"✅ Allocated {resource_id} to {worker_id} (Pool Free: {self.stats['free']}/{self.num_items})")
+                    return result
+
+            except Empty:
+                continue
+            except Exception as exc:
+                logger.error(f"Error allocating resource: {exc}", exc_info=True)
+                continue
+        return None
 
     def release(self, resource_id: str, worker_id: str, reset: bool = True) -> bool:
         with self.pool_lock:

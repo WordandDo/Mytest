@@ -20,6 +20,8 @@ class GenericTrajectorySelector:
     def __init__(self, config: SynthesisConfig):
         """初始化选择器"""
         self.config = config
+        # 总工具数量（用于多样性分母）；优先由外部根据环境/采样器注入
+        self.available_tool_total: int = 0
         
         self.client = openai.OpenAI(
             api_key=os.environ.get("OPENAI_API_KEY", ""),
@@ -145,8 +147,9 @@ class GenericTrajectorySelector:
         for node in path:
             if node.action:
                 tool_names.add(node.action.get("tool_name", ""))
-        diversity_score = len(tool_names) / max(len(self.config.available_tools), 1) * 30
+        # 如果配置中没填工具列表，则回退使用外部注入的总工具数
+        total_tools = len(self.config.available_tools) if self.config.available_tools else self.available_tool_total
+        diversity_score = len(tool_names) / max(total_tools, 1) * 30
         
         total_score = depth_score + info_score + diversity_score
         return total_score
-

@@ -660,7 +660,8 @@ class HttpMCPEnv:
     def env_start(self):
         logger.info(f"Worker [{self.worker_id}] connecting to MCP...")
         self._run_sync(self.mcp_client.connect())
-        self._tools_initialized = True
+        # 连接建立后重新初始化工具列表
+        self._tools_initialized = False
         self._initialize_tools()
 
     def env_close(self):

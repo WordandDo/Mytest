@@ -120,6 +120,8 @@ def run_synthesis_worker(
     )
     
     selector = GenericTrajectorySelector(config=config)
+    # 将实际可用工具数量传给 selector，用于多样性评分分母
+    selector.available_tool_total = len(sampler.available_tools)
     
     # 初始化合成器
     if config.output_format == "task":
@@ -273,6 +275,7 @@ class GenericDataSynthesis:
         )
         
         self.selector = GenericTrajectorySelector(config=config)
+        self.selector.available_tool_total = len(self.sampler.available_tools)
         
         if config.output_format == "task":
             self.synthesizer = OSWorldTaskSynthesizer(config=config)
